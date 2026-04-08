@@ -30,7 +30,3 @@ Energetics are organized in a low-dimensional phase space:
 - Structural proximity → primary driver  
 - Dynamics → secondary modulation  
 - Electrostatics → fine-scale tuning  
-
----
-
-## 📂 Repository Structure
