@@ -1,5 +1,5 @@
 # ======================================================
-# PHYSICS-INFORMED STRUCTURAL MODEL (REPRODUCIBLE SCRIPT)
+# PHYSICS-INFORMED STRUCTURAL MODEL (ΔΔG VERSION)
 # ======================================================
 
 import numpy as np
@@ -16,7 +16,6 @@ from tqdm import tqdm
 # INPUT
 # ======================================================
 
-PDB_FILE = "WT_amber.pdb"
 PDB_FILE = "WT_amber.pdb"
 
 mutations = [
@@ -150,6 +149,15 @@ for mut, resi in tqdm(mutations, desc="Processing mutations"):
 df = pd.DataFrame(rows)
 
 # ======================================================
+# CONVERT TO ΔΔG (RELATIVE TO WT)
+# ======================================================
+
+print("\n[INFO] Converting to ΔΔG (relative to WT)...")
+
+wt_value = exp_data["WT"]
+df["ddG_exp"] = df["dG_exp"] - wt_value
+
+# ======================================================
 # MODEL: LOOCV
 # ======================================================
 
@@ -158,7 +166,7 @@ print("\n[INFO] Running LOOCV...")
 features = ["inv_distance", "steric_energy", "volume_change", "coordination"]
 
 X = df[features].values
-y = df["dG_exp"].values
+y = df["ddG_exp"].values
 
 loo = LeaveOneOut()
 y_pred = np.zeros(len(y))
@@ -169,18 +177,9 @@ for train, test in tqdm(loo.split(X), total=len(y), desc="LOOCV"):
     Xtr = scaler.fit_transform(X[train])
     Xte = scaler.transform(X[test])
 
-    # latent projection
-    lin = LinearRegression()
-    lin.fit(Xtr, y[train])
-    w = lin.coef_
-
-    phi_tr = Xtr @ w
-    phi_te = Xte @ w
-
-    # regression
     reg = LinearRegression()
-    reg.fit(phi_tr.reshape(-1,1), y[train])
-    y_pred[test] = reg.predict(phi_te.reshape(-1,1))
+    reg.fit(Xtr, y[train])
+    y_pred[test] = reg.predict(Xte)
 
 # ======================================================
 # RESULTS
@@ -191,7 +190,7 @@ r2 = r2_score(y, y_pred)
 rp, _ = pearsonr(y, y_pred)
 
 print("\n==============================")
-print(" FINAL MODEL PERFORMANCE")
+print(" FINAL ΔΔG MODEL PERFORMANCE")
 print("==============================")
 print(f"RMSE = {rmse:.2f}")
 print(f"R²   = {r2:.2f}")
@@ -201,7 +200,7 @@ print(f"Rp   = {rp:.2f}")
 # SAVE OUTPUT
 # ======================================================
 
-df["dG_pred"] = y_pred
-df.to_csv("results_structural_model.csv", index=False)
+df["ddG_pred"] = y_pred
+df.to_csv("results_structural_ddG_model.csv", index=False)
 
-print("\n[INFO] Results saved to results_structural_model.csv")
+print("\n[INFO] Results saved to results_structural_ddG_model.csv")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# ELECTROSTATICS-ONLY ABSOLUTE ΔG MODEL (APBS)
+# ELECTROSTATICS-ONLY ΔΔG MODEL (APBS, RELATIVE TO WT)
 # ============================================================
 
 import os
@@ -130,7 +130,7 @@ _,_,Vt = np.linalg.svd(raw_E - mean_E)
 principal_axis = Vt[0] / np.linalg.norm(Vt[0])
 
 # ============================================================
-# FEATURES (ABSOLUTE)
+# FEATURES
 # ============================================================
 
 X = []
@@ -178,10 +178,12 @@ X = np.array(X)
 feature_names = ["E_perp","E_tangential","funnel","frustration"]
 
 # ============================================================
-# TARGET (ABSOLUTE ΔG)
+# TARGET → ΔΔG
 # ============================================================
 
-y = np.array([exp_data[s] for s in systems])
+wt_value = exp_data["WT"]
+
+y = np.array([exp_data[s] - wt_value for s in systems])
 
 # ============================================================
 # PHYSICS DESCRIPTOR
@@ -198,10 +200,6 @@ scaler = descriptor.named_steps["scaler"]
 ridge = descriptor.named_steps["ridge"]
 
 weights = ridge.coef_
-
-print("\n=== Descriptor Weights ===")
-for n,w in zip(feature_names, weights):
-    print(f"{n:15s} {w: .4f}")
 
 X_scaled = scaler.transform(X)
 D = X_scaled @ weights
@@ -249,7 +247,7 @@ r2 = r2_score(true,pred)
 rp = pearsonr(true,pred)[0]
 
 print("\n==============================")
-print(" ABSOLUTE ΔG MODEL")
+print(" ΔΔG MODEL (Electrostatics)")
 print("==============================")
 print(f"RMSE = {rmse:.2f}")
 print(f"R2   = {r2:.2f}")
@@ -261,8 +259,9 @@ print(f"Rp   = {rp:.2f}")
 
 pd.DataFrame({
     "system": systems,
-    "dG_exp": true,
-    "dG_pred": pred
-}).to_csv("electrostatics_absolute_dG.csv", index=False)
+    "ddG_exp": true,
+    "ddG_pred": pred
+}).to_csv("electrostatics_ddG.csv", index=False)
 
-print("\n[INFO] Saved: electrostatics_absolute_dG.csv")
+print("\n[INFO] Saved: electrostatics_ddG.csv")
+
