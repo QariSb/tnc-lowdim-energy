@@ -561,6 +561,155 @@ def compare_steric_models(context):
         f"{abs(metrics_residue['RMSE'] - metrics_atom['RMSE']):.3f}"
     )
 
+
+
+
+# ============================================================
+# ALPHA VS BETA CARBON REPRESENTATION COMPARISON
+# ============================================================
+
+BETA_CUTOFF = 6.0
+
+
+def get_reference_atom(residue):
+    """
+    Use CB atom when available.
+    Fallback to CA for glycine or missing CB.
+    """
+
+    if "CB" in residue:
+        return residue["CB"].coord
+
+    return residue["CA"].coord
+
+
+
+def build_atom_representation_dataset(context, use_beta=False):
+    rows = []
+
+    label = "CB" if use_beta else "CA"
+
+    for mut, resi in tqdm(
+        MUTATIONS,
+        desc=f"{label} representation"
+    ):
+
+        residue = context.residue_map[resi]
+
+        wt_aa = mut[0]
+        mut_aa = mut[-1]
+
+        if use_beta:
+            res_coord = get_reference_atom(residue)
+        else:
+            res_coord = residue["CA"].coord
+
+        inv_dist = inverse_distance(
+            res_coord,
+            context.ref_point
+        )
+
+        vol_change = volume_change(
+            wt_aa,
+            mut_aa
+        )
+
+        neighbors = residue_neighbor_count(
+            res_coord,
+            context.all_ca,
+            resi,
+            BETA_CUTOFF
+        )
+
+        steric_energy = vol_change * (neighbors + 1)
+
+        coord_strength = coordination_strength(
+            res_coord,
+            context.coord_shell,
+            resi
+        )
+
+        rows.append([
+            inv_dist,
+            steric_energy,
+            vol_change,
+            coord_strength,
+            EXP_DATA[mut] - EXP_DATA["WT"]
+        ])
+
+    return np.array(rows)
+
+
+
+def compare_alpha_beta_representations(context):
+
+    print(
+        "\n[INFO] Comparing alpha-carbon vs beta-carbon representations..."
+    )
+
+    data_ca = build_atom_representation_dataset(
+        context,
+        use_beta=False
+    )
+
+    data_cb = build_atom_representation_dataset(
+        context,
+        use_beta=True
+    )
+
+    X_ca = data_ca[:, :4]
+    X_cb = data_cb[:, :4]
+
+    y = data_ca[:, 4]
+
+    pred_ca = run_loocv_linear(X_ca, y)
+    pred_cb = run_loocv_linear(X_cb, y)
+
+    metrics_ca = compute_metrics(y, pred_ca)
+    metrics_cb = compute_metrics(y, pred_cb)
+
+    print_banner("CA VS CB REPRESENTATION")
+
+    print(
+        f"Alpha-carbon (CA) → "
+        f"RMSE={metrics_ca['RMSE']:.2f}, "
+        f"R²={metrics_ca['R2']:.2f}, "
+        f"Rp={metrics_ca['Rp']:.2f}"
+    )
+
+    print(
+        f"Beta-carbon  (CB) → "
+        f"RMSE={metrics_cb['RMSE']:.2f}, "
+        f"R²={metrics_cb['R2']:.2f}, "
+        f"Rp={metrics_cb['Rp']:.2f}"
+    )
+
+    print("\n[REPRESENTATION DIFFERENCE]")
+
+    print(
+        f"ΔRp   = "
+        f"{abs(metrics_ca['Rp'] - metrics_cb['Rp']):.3f}"
+    )
+
+    print(
+        f"ΔRMSE = "
+        f"{abs(metrics_ca['RMSE'] - metrics_cb['RMSE']):.3f}"
+    )
+
+    if metrics_cb["Rp"] > metrics_ca["Rp"]:
+        print(
+            "\n[INTERPRETATION] "
+            "CB representation captures side-chain packing more effectively."
+        )
+    else:
+        print(
+            "\n[INTERPRETATION] "
+            "CA representation provides a more stable global structural signal."
+        )
+
+
+
+
 # ============================================================
 # REACTION COORDINATE MODEL
 # ============================================================
@@ -641,6 +790,81 @@ def analyze_rc_coefficients(df):
         intercepts.append(reg.intercept_)
 
     coefficients = np.array(coefficients)
+
+
+    # ============================================================
+    # NORMALIZED RC EQUATION WITH UNCERTAINTY
+    # ============================================================
+
+    # --------------------------------------------
+    # normalize each coefficient vector
+    # --------------------------------------------
+
+    coefficients_normalized = []
+
+    for w in coefficients:
+
+        w_norm = w / (norm(w) + EPS)
+
+        coefficients_normalized.append(w_norm)
+
+    coefficients_normalized = np.array(
+        coefficients_normalized
+    )
+
+    # --------------------------------------------
+    # mean and std of normalized weights
+    # --------------------------------------------
+
+    w_mean_norm = np.mean(
+        coefficients_normalized,
+        axis=0
+    )
+
+    w_std_norm = np.std(
+        coefficients_normalized,
+        axis=0
+    )
+
+    # --------------------------------------------
+    # print normalized RC equation
+    # --------------------------------------------
+
+    print("\n[NORMALIZED REACTION COORDINATE]\n")
+
+    feature_labels = [
+        r"\tilde{d}^{-1}",
+        r"\tilde{E}_{\mathrm{steric}}",
+        r"\Delta \tilde{V}"
+    ]
+
+    terms = []
+
+    for i, label in enumerate(feature_labels):
+
+        coef = w_mean_norm[i]
+        err = w_std_norm[i]
+
+        sign = "+" if coef >= 0 else "-"
+
+        term = (
+            f"{sign} "
+            f"({abs(coef):.3f} \\pm {err:.3f})"
+            f"{label}"
+        )
+
+        terms.append(term)
+
+    equation = " ".join(terms)
+
+    if equation.startswith("+"):
+        equation = equation[2:]
+
+    print(
+        r"$\xi = "
+        + equation
+        + r"$"
+    )
     intercepts = np.array(intercepts)
 
     w_mean = np.mean(coefficients, axis=0)
@@ -686,6 +910,98 @@ def analyze_rc_coefficients(df):
     print(
         f"Min cosine similarity : "
         f"{cosine_similarities.min():.4f}"
+    )
+
+    # ============================================================
+    # LATEX-FORMATTED RC EQUATION
+    # ============================================================
+
+    print("\n[REACTION COORDINATE EQUATION]\n")
+
+    feature_labels = [
+        r"\tilde{d}^{-1}",
+        r"\tilde{E}_{\mathrm{steric}}",
+        r"\Delta \tilde{V}"
+    ]
+
+    terms = []
+
+    for i, label in enumerate(feature_labels):
+
+        coef = w_mean[i]
+        err = w_std[i]
+
+        sign = "+" if coef >= 0 else "-"
+
+        term = (
+            f"{sign} "
+            f"({abs(coef):.3f} \\pm {err:.3f})"
+            f"{label}"
+        )
+
+        terms.append(term)
+
+    equation = " ".join(terms)
+
+    if equation.startswith("+"):
+        equation = equation[2:]
+
+    print(
+        r"$\xi = "
+        + equation
+        + r"$"
+    )
+
+
+
+    # ============================================================
+    # NORMALIZED RC EQUATION
+    # ============================================================
+
+    # --------------------------------------------------------
+    # NORMALIZE MEAN RC VECTOR
+    # --------------------------------------------------------
+
+    w_norm = w_mean / np.linalg.norm(w_mean)
+
+    print("\n[NORMALIZED REACTION COORDINATE]\n")
+
+    feature_labels = [
+        r"\tilde{d}^{-1}",
+        r"\tilde{E}_{\mathrm{steric}}",
+        r"\Delta \tilde{V}"
+    ]
+
+    terms = []
+
+    for i, label in enumerate(feature_labels):
+
+        coef = w_norm[i]
+
+        sign = "+" if coef >= 0 else "-"
+
+        term = (
+            f"{sign} "
+            f"{abs(coef):.3f}"
+            f"{label}"
+        )
+
+        terms.append(term)
+
+    equation = " ".join(terms)
+
+    if equation.startswith("+"):
+        equation = equation[2:]
+
+    print(
+        r"$\xi = "
+        + equation
+        + r"$"
+    )
+
+    print(
+        f"\n||w|| = "
+        f"{np.linalg.norm(w_norm):.4f}"
     )
 
     return {
@@ -928,14 +1244,150 @@ def save_outputs(df_base, df_augmented, feature_results):
     )
 
     feature_results.to_csv(
-        "feature_combination_search.csv",
+        "structural_feature_combination_search.csv",
         index=False
     )
 
     print(
         "[INFO] Feature search written to: "
-        "feature_combination_search.csv"
+        "structural_feature_combination_search.csv"
     )
+
+
+
+# ============================================================
+# STATISTICAL COMPARISON:
+# FULL MULTIVARIATE vs RANK-1 RC MODEL
+# ============================================================
+
+from scipy.stats import ttest_rel, wilcoxon
+
+
+def compare_full_vs_rc_model(df):
+    print(
+        "\n[INFO] Comparing full multivariate model "
+        "vs rank-1 reaction-coordinate model..."
+    )
+
+    X = df[BASE_FEATURES].values
+    y = df["ddG_exp"].values
+
+    # --------------------------------------------------------
+    # FULL MODEL
+    # --------------------------------------------------------
+
+    pred_full = run_loocv_linear(X, y)
+
+    metrics_full = compute_metrics(y, pred_full)
+
+    # --------------------------------------------------------
+    # RC MODEL
+    # --------------------------------------------------------
+
+    _, pred_rc, metrics_rc = run_reaction_coordinate_model(df)
+
+    # --------------------------------------------------------
+    # RESIDUALS
+    # --------------------------------------------------------
+
+    residual_full = np.abs(y - pred_full)
+    residual_rc = np.abs(y - pred_rc)
+
+    # --------------------------------------------------------
+    # PAIRED TESTS
+    # --------------------------------------------------------
+
+    t_stat, t_p = ttest_rel(
+        residual_full,
+        residual_rc
+    )
+
+    try:
+        w_stat, w_p = wilcoxon(
+            residual_full,
+            residual_rc
+        )
+    except:
+        w_stat, w_p = np.nan, np.nan
+
+    # --------------------------------------------------------
+    # PERFORMANCE DIFFERENCE
+    # --------------------------------------------------------
+
+    delta_rp = metrics_rc["Rp"] - metrics_full["Rp"]
+    delta_rmse = metrics_rc["RMSE"] - metrics_full["RMSE"]
+
+    # --------------------------------------------------------
+    # REPORT
+    # --------------------------------------------------------
+
+    print_banner(
+        "FULL MODEL vs RC MODEL COMPARISON"
+    )
+
+    print(
+        f"Full model  → "
+        f"RMSE={metrics_full['RMSE']:.3f}, "
+        f"R²={metrics_full['R2']:.3f}, "
+        f"Rp={metrics_full['Rp']:.3f}"
+    )
+
+    print(
+        f"RC model    → "
+        f"RMSE={metrics_rc['RMSE']:.3f}, "
+        f"R²={metrics_rc['R2']:.3f}, "
+        f"Rp={metrics_rc['Rp']:.3f}"
+    )
+
+    print("\n[DIFFERENCE]")
+
+    print(f"ΔRp   = {delta_rp:.4f}")
+    print(f"ΔRMSE = {delta_rmse:.4f}")
+
+    print("\n[PAIRED RESIDUAL TESTS]")
+
+    print(
+        f"Paired t-test      : "
+        f"t = {t_stat:.4f}, p = {t_p:.4e}"
+    )
+
+    print(
+        f"Wilcoxon signed-rank: "
+        f"W = {w_stat:.4f}, p = {w_p:.4e}"
+    )
+
+    # --------------------------------------------------------
+    # INTERPRETATION
+    # --------------------------------------------------------
+
+    print("\n[INTERPRETATION]")
+
+    if t_p > 0.05:
+        print(
+            "No statistically significant difference "
+            "between the full multivariate model and "
+            "the rank-1 reaction-coordinate model."
+        )
+
+        print(
+            "The dominant predictive signal is therefore "
+            "effectively low-dimensional."
+        )
+
+    else:
+        print(
+            "The RC projection produces statistically "
+            "different residuals relative to the full model."
+        )
+
+    return {
+        "full_metrics": metrics_full,
+        "rc_metrics": metrics_rc,
+        "delta_rp": delta_rp,
+        "delta_rmse": delta_rmse,
+        "t_p": t_p,
+        "w_p": w_p
+    }
 
 # ============================================================
 # MAIN
@@ -953,6 +1405,8 @@ def main():
 
     compare_steric_models(context)
 
+    compare_alpha_beta_representations(context)
+
     phi_all, _, _ = run_reaction_coordinate_model(df_base)
 
     rc_results = analyze_rc_coefficients(df_base)
@@ -962,6 +1416,10 @@ def main():
     feature_results = feature_combination_search(df_augmented)
 
     rc_without_ols(df_base, rc_results["w_mean"])
+
+    phi_all, _, _ = run_reaction_coordinate_model(df_base)
+
+    compare_full_vs_rc_model(df_base)
 
     structural_rc_fit(
         phi_all,
