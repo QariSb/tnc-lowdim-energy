@@ -23,28 +23,6 @@ The results demonstrate that mutation-induced energetics can be described by a *
 
 ---
 
-## Repository Structure
-
-```
-.
-├── data/
-│   ├── experimental_data.csv
-│   └── structures/
-├── descriptors/
-│   ├── structural_features.py
-│   ├── electrostatic_features.py
-│   └── dynamical_features.py
-├── models/
-│   ├── regression.py
-│   └── cross_validation.py
-├── analysis/
-│   ├── feature_selection.py
-│   ├── sensitivity_analysis.py
-│   └── dimensionality_reduction.py
-├── figures/
-│   └── generate_figures.py
-└── main.py
-```
 
 ---
 
@@ -102,29 +80,7 @@ networkx
 matplotlib
 ```
 
-Install dependencies:
 
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Usage
-
-### Run full pipeline
-
-```bash
-python main.py
-```
-
-### Run individual modules
-
-```bash
-python descriptors/structural_features.py
-python descriptors/electrostatic_features.py
-python descriptors/dynamical_features.py
-```
 
 ---
 
