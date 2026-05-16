@@ -101,6 +101,11 @@ from scipy.interpolate import griddata
 from adjustText import adjust_text
 
 import matplotlib
+from matplotlib.colors import TwoSlopeNorm
+from mpl_toolkits.mplot3d import proj3d
+from sklearn.inspection import permutation_importance
+from scipy.ndimage import gaussian_filter
+
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.cluster import KMeans
 from scipy.spatial import Delaunay
@@ -715,12 +720,12 @@ def run_manifold_geometry(
 
     print(
         f"Participation Ratio : "
-        f"{participation_ratio:.3f}"
+        f"{participation_ratio:.2f}"
     )
 
     print(
         f"Entropy Dimension   : "
-        f"{entropy_dimension:.3f}"
+        f"{entropy_dimension:.2f}"
     )
 
     isomap = Isomap(
@@ -910,8 +915,8 @@ def benchmark_models(
 
         print(
             f"{name:<20} "
-            f"Rp={metrics['Rp']:.3f} "
-            f"RMSE={metrics['RMSE']:.3f}"
+            f"Rp={metrics['Rp']:.2f} "
+            f"RMSE={metrics['RMSE']:.2f}"
         )
 
     results_df = pd.DataFrame(results)
@@ -983,12 +988,12 @@ def print_top_models(results_df):
 
         print(
             f"[{int(row['rank'])}] "
-            f"Rp={row['Rp']:.3f} | "
-            f"RMSE={row['RMSE']:.3f} | "
-            f"R2={row['R2']:.3f} | "
-            f"MAE={row['MAE']:.3f} | "
-            f"Stability={row['stability']:.3f} | "
-            f"Score={row['score']:.3f}"
+            f"Rp={row['Rp']:.2f} | "
+            f"RMSE={row['RMSE']:.2f} | "
+            f"R2={row['R2']:.2f} | "
+            f"MAE={row['MAE']:.2f} | "
+            f"Stability={row['stability']:.2f} | "
+            f"Score={row['score']:.2f}"
         )
 
         print(f"Features: {row['features']}")
@@ -1090,8 +1095,8 @@ def print_rc_uncertainty(
     for _, row in coef_df.iterrows():
 
         print(
-            f"{row['coefficient']:+.3f} ± "
-            f"{row['coef_std']:.3f} * "
+            f"{row['coefficient']:+.2f} ± "
+            f"{row['coef_std']:.2f} * "
             f"{row['feature']} "
             f"(p={row['p_value']:.3e})"
         )
@@ -1110,12 +1115,12 @@ def print_rc_uncertainty(
     b_p = ols.pvalues[0]
 
     print(
-        f"a_global = {a_global:.3f} ± {a_se:.3f} "
+        f"a_global = {a_global:.2f} ± {a_se:.2f} "
         f"| p = {a_p:.3e}"
     )
 
     print(
-        f"b_global = {b_global:.3f} ± {b_se:.3f} "
+        f"b_global = {b_global:.2f} ± {b_se:.2f} "
         f"| p = {b_p:.3e}"
     )
 
@@ -1126,14 +1131,6 @@ def print_rc_uncertainty(
 # 3D THERMODYNAMIC SECTOR PROJECTION (CLEAN PIPELINE)
 # Structural / Electrostatic / Dynamical RC Decomposition
 # =====================================================================
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-from sklearn.preprocessing import StandardScaler
-from matplotlib.colors import Normalize, TwoSlopeNorm
-from tqdm import tqdm
 
 # =====================================================================
 # CONFIG
@@ -1205,13 +1202,6 @@ def plot_3D(
     3D scatter + 2D adjustText labeling with arrows (all mutations)
     """
 
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import TwoSlopeNorm
-    from mpl_toolkits.mplot3d import proj3d
-    from adjustText import adjust_text
-    from tqdm import tqdm
-
     # =========================================================
     # FIGURE
     # =========================================================
@@ -1250,10 +1240,6 @@ def plot_3D(
         edgecolors='black',
         linewidths=0.5
     )
-
-    #ax.set_xlabel(r"$\xi_{\mathrm{struct}}^{(\mathrm{PC1})}$",labelpad=10)
-    #ax.set_ylabel(r"$\xi_{\mathrm{elec}}^{(\mathrm{PC1})}$", labelpad=10)
-    #ax.set_zlabel(r"$\xi_{\mathrm{dyn}}^{(\mathrm{PC1})}$", labelpad=10)
 
     ax.set_xlabel(
     r"$\xi_{\mathrm{struct}}^{(\mathrm{PC1})}$",
@@ -1343,7 +1329,8 @@ def plot_3D(
     plt.show()
     plt.close()
 
-    print(f"[SAVED] {filename}")    
+    print(f"[SAVED] {filename}") 
+    
 # =====================================================================
 # EXPORT
 # =====================================================================
@@ -1367,7 +1354,6 @@ def run_sector_projection_analysis(df, publication):
     export_coordinates(proj_df)
 
     plot_3D(proj_df, OUTPUT_FIG_3D)
-    #plot_3D(proj_df, OUTPUT_FIG_3D_LABELED, labeled=True, diverging=True)
 
     print("\n[PIPELINE COMPLETE]")
     return proj_df
@@ -1382,20 +1368,6 @@ def plot_three_panel_figure(
     feature_list,
     output_file="figure_3panel.png"
 ):
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import mean_squared_error
-    from sklearn.cluster import KMeans
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-
-    from scipy.stats import pearsonr
-    from scipy.interpolate import griddata
-    from scipy.spatial import Delaunay
-    from scipy.ndimage import gaussian_filter
-
-    from adjustText import adjust_text
 
     # ============================
     # INPUTS
@@ -1814,9 +1786,6 @@ def run_full_RC_pipeline(proj_df, prefix="Figure3"):
 
     print("\n[PIPELINE COMPLETE]")
 
-import numpy as np
-import pandas as pd
-
 
 def build_RC_projections(
     df,
@@ -1866,9 +1835,9 @@ def build_RC_projections(
     print("Dynamical:", dyn_features)
 
     print("\nVariance:")
-    print(f"xi_struct = {np.var(df['xi_struct']):.3f}")
-    print(f"xi_elec   = {np.var(df['xi_elec']):.3f}")
-    print(f"xi_dyn    = {np.var(df['xi_dyn']):.3f}")
+    print(f"xi_struct = {np.var(df['xi_struct']):.2f}")
+    print(f"xi_elec   = {np.var(df['xi_elec']):.2f}")
+    print(f"xi_dyn    = {np.var(df['xi_dyn']):.2f}")
 
     return df
 
@@ -1933,7 +1902,7 @@ def main():
 
     section("BEST SUBSET MODEL")
     print(best_subset_result["features"])
-    print(f"Rp = {best_subset_result['metrics']['Rp']:.3f}")
+    print(f"Rp = {best_subset_result['metrics']['Rp']:.2f}")
 
     # =========================================================
     # 2. FIXED PHYSICAL MODEL (FOR PUBLICATION)
@@ -1952,7 +1921,7 @@ def main():
 
     fixed_result = evaluate_subset_strict(df, y, selected_features)
 
-    print(f"Rp = {fixed_result['metrics']['Rp']:.3f}")
+    print(f"Rp = {fixed_result['metrics']['Rp']:.2f}")
 
     # =========================================================
     # 3. BUILD PUBLICATION MODEL
