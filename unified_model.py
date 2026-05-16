@@ -22,10 +22,6 @@ Pipeline Contents
 9. Manifold Geometry
 10. Nonlinear Visualization
 11. Model Benchmarking
-12. Thermodynamic Regime Analysis
-13. Hierarchical Thermodynamics
-14. Export Utilities
-15. Main Execution
 
 Target
 ------
@@ -135,7 +131,7 @@ class Config:
 
     random_seed: int = 42
 
-    max_features: int = 5
+    max_features: int = 2
 
     ridge_alpha: float = 0.1
 
@@ -752,46 +748,6 @@ def run_manifold_geometry(
     }
 
 
-# =====================================================================
-# PLOTTING UTILITIES
-# =====================================================================
-
-
-def scatter_embedding(
-    x,
-    y,
-    color,
-    xlabel,
-    ylabel,
-    title,
-    cbar_label,
-    filename
-):
-
-    fig = plt.figure(figsize=(7, 6))
-
-    plt.scatter(
-        x,
-        y,
-        c=color,
-        s=80,
-        edgecolor="k"
-    )
-
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-
-    plt.title(title)
-
-    cb = plt.colorbar()
-
-    cb.set_label(cbar_label)
-
-    plt.tight_layout()
-
-    save_figure(fig, filename)
-
-    plt.close()
 
 
 # =====================================================================
@@ -974,183 +930,6 @@ def benchmark_models(
 
 
 # =====================================================================
-# THERMODYNAMIC REGIME ANALYSIS
-# =====================================================================
-
-
-def analyze_thermodynamic_regimes(
-    embedding,
-    xi,
-    y
-):
-
-    section("THERMODYNAMIC REGIME ANALYSIS")
-
-    bic_scores = []
-
-    gmm_models = []
-
-    k_range = range(2, 7)
-
-    for k in k_range:
-
-        gmm = GaussianMixture(
-            n_components=k,
-            covariance_type='full',
-            random_state=42
-        )
-
-        gmm.fit(embedding)
-
-        bic = gmm.bic(embedding)
-
-        bic_scores.append(bic)
-
-        gmm_models.append(gmm)
-
-        print(f"K={k} | BIC={bic:.2f}")
-
-    best_idx = np.argmin(bic_scores)
-
-    best_gmm = gmm_models[best_idx]
-
-    regimes = best_gmm.predict(embedding)
-
-    probabilities = best_gmm.predict_proba(
-        embedding
-    )
-
-    confidence = probabilities.max(axis=1)
-
-    regime_df = pd.DataFrame({
-
-        "ISO1": embedding[:, 0],
-
-        "ISO2": embedding[:, 1],
-
-        "xi": xi,
-
-        "ddG_exp": y,
-
-        "regime": regimes,
-
-        "confidence": confidence
-    })
-
-    save_dataframe(
-        regime_df,
-        "thermodynamic_regimes.csv"
-    )
-
-    return regime_df
-
-
-# =====================================================================
-# HIERARCHICAL THERMODYNAMICS
-# =====================================================================
-
-
-def hierarchical_thermodynamic_analysis(
-    df,
-    y
-):
-
-    section("HIERARCHICAL THERMODYNAMICS")
-
-    hierarchy = {
-
-        "Layer-1_Steric": [
-            "volume_change",
-            "steric_energy"
-        ],
-
-        "Layer-2_Electrostatic": [
-            "volume_change",
-            "steric_energy",
-            "E_ca",
-            "phi_sq"
-        ],
-
-        "Layer-3_Anisotropic": [
-            "volume_change",
-            "steric_energy",
-            "E_ca",
-            "phi_sq",
-            "E_perp"
-        ]
-    }
-
-    rows = []
-
-    for layer, features in hierarchy.items():
-
-        X = df[features].values
-
-        loo = LeaveOneOut()
-
-        y_pred = np.zeros(len(y))
-
-        for tr, te in loo.split(X):
-
-            Xtr = X[tr]
-            Xte = X[te]
-
-            ytr = y[tr]
-
-            scaler = StandardScaler()
-
-            Xtr_scaled = scaler.fit_transform(Xtr)
-
-            Xte_scaled = scaler.transform(Xte)
-
-            pca = PCA(n_components=1)
-
-            xi_tr = pca.fit_transform(
-                Xtr_scaled
-            ).flatten()
-
-            xi_te = pca.transform(
-                Xte_scaled
-            ).flatten()
-
-            reg = LinearRegression()
-
-            reg.fit(
-                xi_tr.reshape(-1, 1),
-                ytr
-            )
-
-            pred = reg.predict(
-                xi_te.reshape(-1, 1)
-            )
-
-            y_pred[te] = pred[0]
-
-        metrics = compute_metrics(y, y_pred)
-
-        row = {
-            "layer": layer,
-            **metrics
-        }
-
-        rows.append(row)
-
-        print(
-            f"{layer:<30} "
-            f"Rp={metrics['Rp']:.3f}"
-        )
-
-    hierarchy_df = pd.DataFrame(rows)
-
-    save_dataframe(
-        hierarchy_df,
-        "hierarchical_thermodynamics.csv"
-    )
-
-    return hierarchy_df
-
-
-# =====================================================================
 # RESULTS TABLE
 # =====================================================================
 
@@ -1233,42 +1012,20 @@ def print_publication_model(
 
     section("STRICT LEAKAGE-FREE PERFORMANCE")
 
-    print(f"RMSE      : {metrics['RMSE']:.3f}")
-    print(f"MAE       : {metrics['MAE']:.3f}")
-    print(f"R2        : {metrics['R2']:.3f}")
-    print(f"Rp        : {metrics['Rp']:.3f}")
-    print(f"Spearman  : {metrics['Spearman']:.3f}")
-    print(f"Stability : {best_result['stability']:.3f}")
-    print(f"Score     : {best_result['score']:.3f}")
+    print(f"RMSE      : {metrics['RMSE']:.2f}")
+    print(f"MAE       : {metrics['MAE']:.2f}")
+    print(f"R2        : {metrics['R2']:.2f}")
+    print(f"Rp        : {metrics['Rp']:.2f}")
+    print(f"Spearman  : {metrics['Spearman']:.2f}")
+    print(f"Stability : {best_result['stability']:.2f}")
+    print(f"Score     : {best_result['score']:.2f}")
 
     section("FINAL THERMODYNAMIC MODEL")
 
     print(
-        f"ΔΔG = ({publication['a_global']:.3f}) ξ "
-        f"+ ({publication['b_global']:.3f})"
+        f"ΔΔG = ({publication['a_global']:.2f}) ξ "
+        f"+ ({publication['b_global']:.2f})"
     )
-
-    section("GLOBAL CANONICAL RC")
-
-    print("\nξ =")
-
-    for _, row in publication["coef_df"].iterrows():
-
-        print(
-            f"{row['coefficient']:+.3f} * "
-            f"{row['feature']}"
-        )
-
-    section("OLS STATISTICS")
-
-    ols = publication["ols"]
-
-    print(f"R²        : {ols.rsquared:.3f}")
-    print(f"Adj. R²   : {ols.rsquared_adj:.3f}")
-    print(f"F-stat    : {ols.fvalue:.3f}")
-    print(f"p-value   : {ols.f_pvalue:.3e}")
-    print(f"AIC       : {ols.aic:.3f}")
-    print(f"BIC       : {ols.bic:.3f}")
 
 
 
@@ -1615,756 +1372,7 @@ def run_sector_projection_analysis(df, publication):
     print("\n[PIPELINE COMPLETE]")
     return proj_df
 
-# ===============================
-# USAGE
-# ===============================
-# RC_feature_attribution(proj_df)
 
-
-# =====================================================================
-# HIERARCHICAL ENERGETIC MANIFOLD FIGURE
-# =====================================================================
-
-def generate_energetic_manifold_figure(
-    df,
-    y,
-    f_struct,
-    f_elc,
-    f_enm,
-        publication
-
-):
-
-    section("HIERARCHICAL ENERGETIC MANIFOLD")
-
-    # ================================================================
-    # IMPORTS
-    # ================================================================
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    from scipy.interpolate import (
-        UnivariateSpline,
-        griddata
-    )
-
-    from scipy.spatial import Delaunay
-
-    from sklearn.preprocessing import (
-        StandardScaler
-    )
-
-    from sklearn.cluster import KMeans
-
-    from sklearn.discriminant_analysis import (
-        LinearDiscriminantAnalysis
-    )
-
-    from sklearn.cross_decomposition import (
-        PLSRegression
-    )
-
-    from sklearn.linear_model import (
-        Ridge,
-        LinearRegression
-    )
-
-    # ================================================================
-    # REPRODUCIBILITY
-    # ================================================================
-
-    np.random.seed(0)
-
-    # ================================================================
-    # FEATURE MATRICES
-    # ================================================================
-
-    X_struct = df[f_struct].values
-    X_elec   = df[f_elc].values
-    X_dyn    = df[f_enm].values
-
-    # ================================================================
-    # SUPERVISED BLOCK PROJECTION
-    # ================================================================
-
-    def supervised_projection(X, y):
-
-        scaler = StandardScaler()
-
-        Xs = scaler.fit_transform(X)
-
-        ridge = Ridge(alpha=0.1)
-
-        ridge.fit(Xs, y)
-
-        w = ridge.coef_
-
-        norm = np.linalg.norm(w)
-
-        if norm < 1e-12:
-
-            return np.zeros((len(X), 1))
-
-        w = w / norm
-
-        rc = Xs @ w
-
-        return rc.reshape(-1, 1)
-
-    # ================================================================
-    # BLOCK REACTION COORDINATES
-    # ================================================================
-
-    D_struct = supervised_projection(
-        X_struct,
-        y
-    )
-
-    D_elec = supervised_projection(
-        X_elec,
-        y
-    )
-
-    D_dyn = supervised_projection(
-        X_dyn,
-        y
-    )
-
-    # ================================================================
-    # HIERARCHICAL BLOCK MATRIX
-    # ================================================================
-
-    X_blocks = np.concatenate(
-        [
-            D_struct,
-            D_elec,
-            D_dyn
-        ],
-        axis=1
-    )
-
-    # ================================================================
-    # SCALE BLOCK SPACE
-    # ================================================================
-
-    scaler_global = StandardScaler()
-
-    Xs = scaler_global.fit_transform(
-        X_blocks
-    )
-
-    # ================================================================
-    # GLOBAL THERMODYNAMIC RC
-    # ================================================================
-
-    coef = publication["coef_df"]["coefficient"].values
-    features = publication["coef_df"]["feature"].values
-
-    X_sel = df[features].values
-    RC = X_sel @ coef
-
-    # ================================================================
-    # GLOBAL ENERGETIC MODEL
-    # ================================================================
-
-    lin = LinearRegression()
-
-    lin.fit(
-        RC.reshape(-1, 1),
-        y
-    )
-
-    yhat = lin.predict(
-        RC.reshape(-1, 1)
-    )
-
-    residual = y - yhat
-
-    # ================================================================
-    # REGIME DISCOVERY
-    # ================================================================
-
-    cluster_space = np.column_stack([
-        RC,
-        residual
-    ])
-
-    kmeans = KMeans(
-        n_clusters=2,
-        random_state=0,
-        n_init=50
-    )
-
-    labels = kmeans.fit_predict(
-        cluster_space
-    )
-
-    # ================================================================
-    # STABLE LABEL ORDERING
-    # ================================================================
-
-    centers = []
-
-    for lab in np.unique(labels):
-
-        centers.append(
-            residual[labels == lab].mean()
-        )
-
-    centers = np.array(centers)
-
-    order = np.argsort(centers)
-
-    labels = np.array([
-        np.where(order == l)[0][0]
-        for l in labels
-    ])
-
-    # ================================================================
-    # RESIDUAL DISCRIMINANT COORDINATE
-    # ================================================================
-
-    lda = LinearDiscriminantAnalysis(
-        n_components=1
-    )
-
-    RDC = lda.fit_transform(
-        Xs,
-        labels
-    ).flatten()
-
-    # ================================================================
-    # FREE ENERGY MANIFOLD
-    # ================================================================
-
-    rc_grid = np.linspace(
-        RC.min(),
-        RC.max(),
-        180
-    )
-
-    rdc_grid = np.linspace(
-        RDC.min(),
-        RDC.max(),
-        180
-    )
-
-    RC_mesh, RDC_mesh = np.meshgrid(
-        rc_grid,
-        rdc_grid
-    )
-
-    G_surface = griddata(
-        (RC, RDC),
-        y,
-        (RC_mesh, RDC_mesh),
-        method="linear"
-    )
-
-    # ================================================================
-    # REMOVE EXTRAPOLATION
-    # ================================================================
-
-    points = np.column_stack([
-        RC,
-        RDC
-    ])
-
-    tri = Delaunay(points)
-
-    mask = tri.find_simplex(
-        np.column_stack([
-            RC_mesh.ravel(),
-            RDC_mesh.ravel()
-        ])
-    ) < 0
-
-    G_surface_flat = G_surface.ravel()
-
-    G_surface_flat[mask] = np.nan
-
-    G_surface = G_surface_flat.reshape(
-        G_surface.shape
-    )
-
-    # ================================================================
-    # FIGURE STYLE
-    # ================================================================
-
-    plt.rcParams.update({
-
-        "font.family": "serif",
-
-        "mathtext.fontset": "stix",
-
-        "font.size": 10,
-
-        "axes.titleweight": "bold",
-
-        "axes.labelweight": "bold"
-
-    })
-    
-    # ================================================================
-    # FIGURE
-    # ================================================================
-
-    fig, ax = plt.subplots(
-        1,
-        3,
-        figsize=(9.8, 3.5)
-    )
-
-    fig.subplots_adjust(
-        wspace=0.42
-    )
-
-    # ================================================================
-    # PANEL A
-    # HIERARCHICAL DESCRIPTOR COLLAPSE
-    # ================================================================
-
-    features = [
-        "volume_change",
-        "steric_energy",
-        "E_ca",
-        "phi_sq",
-        "E_perp"
-    ]
-
-    X_desc = df[features].values
-
-    scaler_desc = StandardScaler()
-
-    X_desc_scaled = scaler_desc.fit_transform(
-        X_desc
-    )
-
-    idx_rc = np.argsort(RC)
-
-    RC_sorted = RC[idx_rc]
-
-    X_sorted = X_desc_scaled[idx_rc]
-
-    feature_labels = {
-
-        "volume_change": r"$\Delta V$",
-
-        "steric_energy": r"$E_{\mathrm{steric}}$",
-
-        "E_ca": r"$E_{\mathrm{Ca}}$",
-
-        "phi_sq": r"$\phi^2$",
-
-        "E_perp": r"$E_{\perp}$"
-    }
-
-    colors = plt.cm.tab10.colors
-
-    for i, feat in enumerate(features):
-
-        c = colors[i]
-
-        ax[0].plot(
-            RC_sorted,
-            X_sorted[:, i],
-            linewidth=1.2,
-            alpha=0.30,
-            color=c
-        )
-
-        ax[0].scatter(
-            RC_sorted,
-            X_sorted[:, i],
-            s=30,
-            alpha=0.75,
-            color=c,
-            edgecolor="black",
-            linewidth=0.25,
-            label=feature_labels[feat]
-        )
-
-    ax[0].set_xlabel(
-        r"Reaction coordinate $(\xi)$",
-        fontweight="bold"
-    )
-
-    ax[0].set_ylabel(
-        "Standardized descriptor value",
-        fontweight="bold"
-    )
-
-    ax[0].set_title(
-        "Descriptor collapse",
-        fontweight="bold"
-    )
-
-    ax[0].legend(
-        frameon=False,
-        fontsize=8
-    )
-
-    # ================================================================
-    # PANEL B
-    # GLOBAL ENERGETIC COORDINATE
-    # ================================================================
-
-
-    # ------------------------------------------------
-    # LINEAR MODEL
-    # ------------------------------------------------
-
-    loo = LeaveOneOut()
-
-    y_pred_panel = np.zeros(len(y))
-
-    for tr, te in loo.split(RC):
-
-        model = LinearRegression()
-
-        model.fit(
-        RC[tr].reshape(-1, 1),
-        y[tr]
-        )
-
-        y_pred_panel[te] = model.predict(
-            RC[te].reshape(-1, 1)
-        )[0]
-
-    rp = pearsonr(y, y_pred_panel)[0]
-
-    rmse = np.sqrt(
-    mean_squared_error(
-        y,
-        y_pred_panel
-        )
-    )
-    
-    # ------------------------------------------------
-    # REGRESSION LINE
-    # ------------------------------------------------
-    lin_panel = LinearRegression()
-
-    lin_panel.fit(
-    RC.reshape(-1, 1),y)
-    grid_A = np.linspace(
-        RC.min(),
-        RC.max(),
-        300)
-
-    pred_A = lin_panel.predict(
-        grid_A.reshape(-1, 1)
-    )
-    
-    # ------------------------------------------------
-    # SCATTER
-    # ------------------------------------------------
-
-    ax[1].scatter(
-        RC,
-        y,
-        s=46,
-        color="#8c510a",
-        edgecolor="black",
-        linewidth=0.45,
-        alpha=0.90
-    )
-
-
-    # ------------------------------------------------
-    # FORCE-BASED ANNOTATIONS
-    # ------------------------------------------------
-
-    important = np.argsort(
-        np.abs(y)
-    )[-10:]
-    idx_all = np.arange(len(y))
-    texts = []
-    for i in idx_all:
-        texts.append(
-            ax[2].text(
-            RC[i],
-            y[i],
-            mutants[i],
-            fontsize=9,
-            weight='bold',
-            color='black',
-            bbox=dict(
-                facecolor='white',
-                edgecolor='black',
-                boxstyle='round,pad=0.2',
-                alpha=0.85
-            )
-        )
-    )
-
-    adjust_text(
-
-    texts,
-
-    ax=ax[1],
-
-    expand_points=(1.6, 1.8),
-
-    expand_text=(1.5, 1.7),
-
-    force_points=0.9,
-
-    force_text=1.0,
-
-    lim=500,
-
-    arrowprops=dict(
-        arrowstyle="-",
-        lw=0.6,
-        alpha=0.6
-    )
-    )
-
-    # ------------------------------------------------
-    # LINE
-    # ------------------------------------------------
-
-    ax[1].plot(
-        grid_A,
-        pred_A,
-        linewidth=2.6,
-        color="#bf812d"
-    )
-
-    # ------------------------------------------------
-    # LABELS
-    # ------------------------------------------------
-
-    ax[1].set_xlabel(
-        r"Reaction coordinate $(\xi)$",
-        fontweight="bold"
-    )
-
-    ax[1].set_ylabel(
-        r"$\Delta\Delta G$",
-        fontweight="bold"
-    )
-
-    ax[1].set_title(
-        "Energetic coordinate",
-        fontweight="bold"
-    )
-
-    # ------------------------------------------------
-    # METRIC BOX
-    # ------------------------------------------------
-
-    stats_text = (
-        rf"$R_p = {rp:.2f}$" "\n"
-        rf"$\mathrm{{RMSE}} = {rmse:.2f}$"
-    )
-
-    ax[1].text(
-        0.05,
-        0.95,
-        stats_text,
-        transform=ax[1].transAxes,
-        va="top",
-        fontsize=9,
-        bbox=dict(
-            boxstyle="round",
-            fc="white",
-            ec="#6b6b6b",
-            alpha=0.92
-        )
-    )
-
-    # ================================================================
-    # PANEL C
-    # RESIDUAL ENERGETIC MANIFOLD
-    # ================================================================
-
-
-    cf = ax[2].contourf(
-        RC_mesh,
-        RDC_mesh,
-        G_surface,
-        levels=20,
-        alpha=0.85
-    )
-
-    ax[2].contour(
-        RC_mesh,
-        RDC_mesh,
-        G_surface,
-        levels=12,
-        linewidths=0.7,
-        alpha=0.70,
-        colors="black"
-    )
-
-    markers = ["o", "s", "^", "d"]
-
-    for lab, marker in zip(
-        np.unique(labels),
-        markers
-    ):
-
-        m = labels == lab
-
-        ax[2].scatter(
-            RC[m],
-            RDC[m],
-            marker=marker,
-            s=44,
-            edgecolor="black",
-            linewidth=0.8,
-            alpha=0.95,
-            zorder=5,
-            label=f"Regime {lab+1}"
-        )
-
-    # ------------------------------------------------
-    # FORCE-BASED MUTATION LABELS
-    # ------------------------------------------------
-
-    important = np.argsort(
-        np.abs(y)
-    )[-10:]
-
-    texts = []
-
-    bbox = dict(
-
-        boxstyle="round,pad=0.25",
-
-        fc="white",
-
-        ec="none",
-
-        alpha=0.80
-    )
-
-    for i in important:
-
-        txt = ax[2].text(
-
-            RC[i],
-            RDC[i],
-
-            df["mutant"].iloc[i],
-
-            fontsize=7,
-
-            alpha=0.95,
-
-            zorder=10,
-
-            bbox=bbox
-        )
-
-        texts.append(txt)
-
-    adjust_text(
-
-        texts,
-
-        ax=ax[2],
-
-        expand_points=(1.50, 1.70),
-
-        expand_text=(1.40, 1.60),
-
-        force_points=0.90,
-
-        force_text=1.00,
-
-        lim=500,
-
-        arrowprops=dict(
-            arrowstyle="-",
-            lw=0.6,
-            alpha=0.60
-        )
-    )
-
-    # ------------------------------------------------
-    # LEGEND
-    # ------------------------------------------------
-
-    ax[2].legend(
-        frameon=False,
-        fontsize=8,
-        loc="upper right"
-    )
-
-    # ------------------------------------------------
-    # LABELS
-    # ------------------------------------------------
-
-    ax[2].set_xlabel(
-        r"Reaction coordinate $(\xi)$",
-        fontweight="bold"
-    )
-
-    ax[2].set_ylabel(
-        "RDC",
-        fontweight="bold"
-    )
-
-    ax[2].set_title(
-        "Residual energetic manifold",
-        fontweight="bold",
-        fontsize=10
-    )
-    # ================================================================
-    # COLORBAR
-    # ================================================================
-
-    cbar = fig.colorbar(
-    cf,
-    ax=ax[2],
-    fraction=0.050,
-    pad=0.06
-    )
-
-    cbar.set_label(r"$\Delta\Delta G_{\mathrm{exp}}$ (kcal mol$^{-1}$)")
-
-    # ================================================================
-    # AXIS STYLE
-    # ================================================================
-
-    for a in ax:
-
-        a.spines["top"].set_visible(False)
-
-        a.spines["right"].set_visible(False)
-
-    # ================================================================
-    # DYNAMIC LIMITS
-    # ================================================================
-
-    pad = 0.5
-
-    ax[2].set_xlim(
-        RC.min() - pad,
-        RC.max() + pad
-    )
-
-    ax[2].set_ylim(
-        RDC.min() - pad,
-        RDC.max() + pad
-    )
-
-    # ================================================================
-    # SAVE
-    # ================================================================
-
-    plt.savefig(
-        "hierarchical_energetic_manifold.png",
-        dpi=300,
-        bbox_inches="tight",
-        pad_inches=0.08
-    )
-
-    plt.show()
 
 def plot_three_panel_figure(
     df,
@@ -2788,21 +1796,6 @@ def run_attribution(proj_df, output_file):
     plt.savefig(output_file, dpi=600)
     plt.close()
 
-    # LaTeX output
-    print("\n===== RESULTS =====\n")
-    print(r"\begin{tabular}{lcc}")
-    print(r"\hline")
-    print(r"Feature & $\beta$ & Perm \\")
-    print(r"\hline")
-
-    for i, f in enumerate(labels):
-        print(f"{f} & {beta[i]:.2f} & {imp[i]:.2f} \\\\")
-
-    print(r"\hline")
-    print(r"\end{tabular}")
-    print(f"\nR^2 = {R2:.2f}")
-
-
 # =========================================
 # MASTER PIPELINE
 # =========================================
@@ -2967,23 +1960,23 @@ def main():
         f_elc +
         f_enm )
 
-    #all_results = exhaustive_subset_search(df,y,feature_names)
+    all_results = exhaustive_subset_search(df,y,feature_names)
 
-    #results_df = build_results_table(all_results)
+    results_df = build_results_table(all_results)
 
-    #save_dataframe(results_df,"strict_best_subset_models.csv")
+    save_dataframe(results_df,"strict_best_subset_models.csv")
 
-    #results_df.to_json(OUTPUT_DIR / "strict_best_subset_models.json",orient="records",indent=2)
+    results_df.to_json(OUTPUT_DIR / "strict_best_subset_models.json",orient="records",indent=2)
 
-    #print_top_models(results_df)
+    print_top_models(results_df)
 
-    #best_result = all_results[0]
+    best_result = all_results[0]
 
-    #section("BEST MODEL")
+    section("BEST MODEL")
 
-    #print(best_result["features"])
+    print(best_result["features"])
 
-    #print(f"Rp={best_result['metrics']['Rp']:.3f}")
+    print(f"Rp={best_result['metrics']['Rp']:.3f}")
     section("USING FIXED FEATURE SET (NO SUBSET SEARCH)")
 
     # ---- choose features (same as manifold for consistency)
@@ -3005,18 +1998,18 @@ def main():
     selected_features
     )
 
-    #print(f"Rp = {best_result['metrics']['Rp']:.3f}")
+    print(f"Rp = {best_result['metrics']['Rp']:.3f}")
 
     publication = build_publication_model(df,y,best_result)
 
-    #print_publication_model(best_result,publication)
+    print_publication_model(best_result,publication)
 
-    #coef_df = compute_rc_uncertainty(publication,len(y))
+    coef_df = compute_rc_uncertainty(publication,len(y))
 
-    #print_rc_uncertainty(coef_df,publication)
+    print_rc_uncertainty(coef_df,publication)
 
-    #save_dataframe(coef_df,"canonical_rc_coefficients.csv")
-    #run_correlation_analysis(df,feature_names)
+    save_dataframe(coef_df,"canonical_rc_coefficients.csv")
+    run_correlation_analysis(df,feature_names)
 
     manifold_features = [
         'volume_change',
@@ -3026,20 +2019,15 @@ def main():
         'E_perp'
     ]
 
-    #manifold = run_manifold_geometry(df,manifold_features)
+    manifold = run_manifold_geometry(df,manifold_features)
 
-    #scatter_embedding(manifold["X_pca"][:, 0],manifold["X_pca"][:, 1],y,"PC1","PC2","PCA Energy Manifold","ΔΔG","figure_pca_ddG.png")
 
-    #benchmark_models(df,manifold_features,y)
+    benchmark_models(df,manifold_features,y)
 
-    #analyze_thermodynamic_regimes(manifold["X_iso"],publication["xi"],y)
 
     #generate_energetic_manifold_figure(df,y,f_struct,f_elc,f_enm,publication)
 
-    #hierarchical_thermodynamic_analysis(df,y)
-
-
-    #proj_df = run_sector_projection_analysis(df,publication)
+    proj_df = run_sector_projection_analysis(df,publication)
     struct_features = [
     "inv_distance",
     "volume_change",
@@ -3051,10 +2039,10 @@ def main():
     "phi_sq"
     ]
 
-    #dyn_features = ['comm_eff', 'f_collective', 'f_entropy', 'prs_sens']
+    dyn_features = ['comm_eff', 'f_collective', 'f_entropy', 'prs_sens']
 
-    #proj_df = build_RC_projections(df,struct_features,elec_features,dyn_features)
-    #run_full_RC_pipeline(proj_df){re
+    proj_df = build_RC_projections(df,struct_features,elec_features,dyn_features)
+    run_full_RC_pipeline(proj_df)
     plot_three_panel_figure(
     df,
     y,
