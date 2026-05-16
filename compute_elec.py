@@ -35,7 +35,7 @@ from sklearn.preprocessing import StandardScaler
 # CONFIGURATION
 # ============================================================
 
-OUTDIR = "results_rc_final"
+OUTDIR = "ele_results"
 os.makedirs(OUTDIR, exist_ok=True)
 
 PDB_FILE = "WT_amber.pdb"
@@ -45,12 +45,12 @@ PDB_FILE = "WT_amber.pdb"
 # ============================================================
 
 COULOMB = 332.0
-KAPPA = 0.10
+KAPPA = 0.05
 
-EPS_IN = 4.0
+EPS_IN = 10.0
 EPS_OUT = 80.0
 
-LAMBDA = 7.0
+LAMBDA = 4.0
 
 # Effective Ca2+ charge
 CA_CHARGE = 2.0
@@ -149,11 +149,10 @@ def banner(title: str):
 banner("LOADING STRUCTURE")
 
 parser = PDBParser(QUIET=True)
-model = parser.get_structure("WT", PDB_FILE)[0]
-
+structure = parser.get_structure("WT", PDB_FILE)[0]
 residues = [
     (res.id[1], res, res["CA"].coord)
-    for chain in model
+    for chain in structure
     for res in chain
     if "CA" in res
 ]
@@ -166,8 +165,7 @@ print(f"[INFO] Total CA residues: {len(residues)}")
 
 ca_pos = None
 
-for atom in model.get_atoms():
-
+for atom in structure.get_atoms():
     if atom.get_parent().get_resname().strip() == "CA":
         ca_pos = atom.coord
         break
@@ -411,6 +409,8 @@ features = [
 X_full = df[features].values
 y_full = df["ddG_exp"].values
 
+
+
 # ============================================================
 # FEATURE CORRELATION
 # ============================================================
@@ -502,66 +502,277 @@ def compute_loocv_metrics(X, y):
 
     return rmse, r2, rp, p, stderr
 
+
+
+
 # ============================================================
-# FEATURE SUBSET SEARCH
+# NESTED LOOCV FEATURE SELECTION
 # ============================================================
 
-banner("FEATURE SUBSET SEARCH")
+banner("NESTED LOOCV FEATURE SELECTION")
 
-subset_results = []
+outer_loo = LeaveOneOut()
 
-for k in tqdm(
-    range(1, len(features) + 1),
-    desc="Subset size"
+outer_preds = np.zeros(len(y_full))
+
+selected_subsets = []
+
+selected_features_counter = {
+    f: 0 for f in features
+}
+
+all_outer_results = []
+
+# ============================================================
+# OUTER LOOP
+# ============================================================
+
+for outer_fold, (tr_outer, te_outer) in enumerate(
+    outer_loo.split(X_full),
+    start=1
 ):
 
-    for subset in itertools.combinations(features, k):
+    print(
+        f"\n[OUTER FOLD {outer_fold:02d}/{len(y_full)}]"
+    )
 
-        idx = [features.index(f) for f in subset]
+    X_train = X_full[tr_outer]
+    y_train = y_full[tr_outer]
 
-        rmse, r2, rp, p, stderr = compute_loocv_metrics(
-            X_full[:, idx],
-            y_full
-        )
+    X_test = X_full[te_outer]
+    y_test = y_full[te_outer]
 
-        subset_results.append([
-            subset,
-            rmse,
-            r2,
-            rp,
-            stderr
-        ])
+    # --------------------------------------------------------
+    # INNER FEATURE SEARCH
+    # --------------------------------------------------------
+
+    inner_results = []
+
+    for k in range(1, len(features) + 1):
+
+        for subset in itertools.combinations(features, k):
+
+            idx = [
+                features.index(f)
+                for f in subset
+            ]
+
+            rmse, r2, rp, p, stderr = (
+                compute_loocv_metrics(
+                    X_train[:, idx],
+                    y_train
+                )
+            )
+
+            inner_results.append([
+                subset,
+                rmse,
+                r2,
+                rp,
+                stderr
+            ])
+
+    # --------------------------------------------------------
+    # SELECT BEST INNER SUBSET
+    # --------------------------------------------------------
+
+    df_inner = pd.DataFrame(
+        inner_results,
+        columns=[
+            "subset",
+            "rmse",
+            "r2",
+            "rp",
+            "stderr"
+        ]
+    )
+
+    df_inner = df_inner.sort_values(
+        "rmse"
+    )
+
+    best_subset = df_inner.iloc[0]["subset"]
+
+    selected_subsets.append(best_subset)
+
+    print(
+        f"[INFO] Best subset: {best_subset}"
+    )
+
+    # --------------------------------------------------------
+    # FEATURE FREQUENCY
+    # --------------------------------------------------------
+
+    for f in best_subset:
+
+        selected_features_counter[f] += 1
+
+    # --------------------------------------------------------
+    # TRAIN FINAL MODEL ON OUTER TRAINING SET
+    # --------------------------------------------------------
+
+    idx_best = [
+        features.index(f)
+        for f in best_subset
+    ]
+
+    Xtr_best = X_train[:, idx_best]
+
+    Xte_best = X_test[:, idx_best]
+
+    Xtr_w, Xte_w = preprocess_train_test(
+        Xtr_best,
+        Xte_best
+    )
+
+    model = LinearRegression()
+
+    model.fit(
+        Xtr_w,
+        y_train
+    )
+
+    pred = model.predict(Xte_w)[0]
+
+    outer_preds[te_outer] = pred
+
+    all_outer_results.append({
+
+        "fold": outer_fold,
+
+        "test_index": int(te_outer[0]),
+
+        "true_ddG": float(y_test[0]),
+
+        "pred_ddG": float(pred),
+
+        "best_subset": ",".join(best_subset)
+    })
 
 # ============================================================
+# FINAL NESTED-CV PERFORMANCE
+# ============================================================
 
-df_rank = pd.DataFrame(
-    subset_results,
-    columns=[
-        "subset",
-        "rmse",
-        "r2",
-        "rp",
-        "stderr"
-    ]
+rmse_nested = np.sqrt(
+    mean_squared_error(
+        y_full,
+        outer_preds
+    )
 )
 
-df_rank = df_rank.sort_values("rmse")
+r2_nested = r2_score(
+    y_full,
+    outer_preds
+)
 
-df_rank.to_csv(
-    f"{OUTDIR}/subset_ranking.csv",
+rp_nested, rp_p_nested = pearsonr(
+    y_full,
+    outer_preds
+)
+
+stderr_nested = np.std(
+    y_full - outer_preds
+)
+
+banner("NESTED LOOCV PERFORMANCE")
+
+print(f"RMSE   = {rmse_nested:.2f}")
+print(f"R²     = {r2_nested:.2f}")
+print(f"Rₚ     = {rp_nested:.2f}")
+print(f"StdErr = {stderr_nested:.2f}")
+
+# ============================================================
+# SAVE OUTER PREDICTIONS
+# ============================================================
+
+df_nested_preds = pd.DataFrame({
+
+    "mutant": df["mutant"],
+
+    "resi": df["resi"],
+
+    "ddG_exp": y_full,
+
+    "ddG_pred_nested": outer_preds
+})
+
+df_nested_preds.to_csv(
+    f"{OUTDIR}/nested_loocv_predictions.csv",
     index=False
 )
 
-best_subset = df_rank.iloc[0]["subset"]
-
-print("\n[INFO] Best subset:")
-print(best_subset)
-
 # ============================================================
-# BEST SUBSET MODEL
+# FEATURE SELECTION STABILITY
 # ============================================================
 
-banner("BEST SUBSET MODEL")
+banner("FEATURE SELECTION STABILITY")
+
+selection_freq = pd.DataFrame({
+
+    "feature": list(
+        selected_features_counter.keys()
+    ),
+
+    "selection_count": list(
+        selected_features_counter.values()
+    )
+})
+
+selection_freq["selection_fraction"] = (
+
+    selection_freq["selection_count"]
+    / len(y_full)
+)
+
+selection_freq = selection_freq.sort_values(
+    "selection_fraction",
+    ascending=False
+)
+
+print(selection_freq.round(2))
+
+selection_freq.to_csv(
+    f"{OUTDIR}/nested_feature_frequency.csv",
+    index=False
+)
+
+# ============================================================
+# CONSENSUS SUBSET
+# ============================================================
+
+subset_strings = [
+    ",".join(sorted(s))
+    for s in selected_subsets
+]
+
+subset_counts = pd.Series(
+    subset_strings
+).value_counts()
+
+print("\n[INFO] Most common subsets:")
+print(subset_counts.head())
+
+subset_counts.to_csv(
+    f"{OUTDIR}/nested_subset_counts.csv"
+)
+
+# ============================================================
+# BEST CONSENSUS SUBSET
+# ============================================================
+
+consensus_subset = tuple(
+    subset_counts.index[0].split(",")
+)
+
+print("\n[INFO] Consensus subset:")
+print(consensus_subset)
+
+
+# ============================================================
+# DEFINE CONSENSUS FEATURE MATRIX
+# ============================================================
+
+best_subset = consensus_subset
 
 idx_best = [
     features.index(f)
@@ -570,9 +781,23 @@ idx_best = [
 
 X_best = X_full[:, idx_best]
 
-rmse_best, r2_best, rp_best, p_best, stderr_best = (
-    compute_loocv_metrics(X_best, y_full)
+
+# ============================================================
+# CONSENSUS SUBSET PERFORMANCE
+# ============================================================
+
+(
+    rmse_best,
+    r2_best,
+    rp_best,
+    p_best,
+    stderr_best
+) = compute_loocv_metrics(
+    X_best,
+    y_full
 )
+
+banner("CONSENSUS SUBSET MODEL")
 
 print(f"RMSE   = {rmse_best:.2f}")
 print(f"R²     = {r2_best:.2f}")
@@ -580,41 +805,78 @@ print(f"Rₚ     = {rp_best:.2f}")
 print(f"StdErr = {stderr_best:.2f}")
 
 # ============================================================
-# FEATURE IMPORTANCE
+# CONSENSUS MODEL
 # ============================================================
+
+idx_consensus = [
+    features.index(f)
+    for f in consensus_subset
+]
+
+X_consensus = X_full[:, idx_consensus]
 
 scaler = StandardScaler()
 
-X_scaled = scaler.fit_transform(X_best)
-
-importance_model = LinearRegression()
-
-importance_model.fit(X_scaled, y_full)
-
-importance = np.abs(importance_model.coef_)
-
-importance /= np.sum(importance)
-
-df_imp = pd.DataFrame({
-    "feature": best_subset,
-    "importance": importance
-})
-
-df_imp = df_imp.sort_values(
-    "importance",
-    ascending=False
+X_scaled = scaler.fit_transform(
+    X_consensus
 )
 
-print("\n[INFO] Feature importance:")
-print(df_imp.round(2))
+X_w, W = whiten(X_scaled)
 
-df_imp.to_csv(
-    f"{OUTDIR}/feature_importance.csv",
+consensus_model = LinearRegression()
+
+consensus_model.fit(
+    X_w,
+    y_full
+)
+
+coef_consensus = consensus_model.coef_
+
+coef_consensus /= (
+    np.linalg.norm(coef_consensus)
+    + 1e-8
+)
+
+df_consensus = pd.DataFrame({
+
+    "feature": consensus_subset,
+
+    "weight": coef_consensus
+})
+
+print("\n[INFO] Consensus model weights:")
+print(df_consensus.round(3))
+
+df_consensus.to_csv(
+    f"{OUTDIR}/consensus_model_weights.csv",
     index=False
 )
 
+# ============================================================
+# SUMMARY TABLE
+# ============================================================
 
+summary_nested = pd.DataFrame({
 
+    "Metric": [
+        "RMSE",
+        "R2",
+        "Rp",
+        "StdErr"
+    ],
+
+    "Nested_LOOCV": [
+        rmse_nested,
+        r2_nested,
+        rp_nested,
+        stderr_nested
+    ]
+})
+
+summary_nested.to_csv(
+    f"{OUTDIR}/nested_summary.csv",
+    index=False
+)
 
 # ============================================================
 # BEST SUBSET STABILITY ANALYSIS
@@ -906,260 +1168,999 @@ summary.to_csv(
     index=False
 )
 
+
 # ============================================================
-# RC EQUATION
+# ΔΔG MODEL USING MINIMAL SUBSET ONLY
 # ============================================================
 
-banner("FINAL RC EQUATION")
+banner("ΔG MODEL")
 
-print(
-    f"ΔΔG = {a:.2f} ξ {b:+.2f}"
+# ------------------------------------------------------------
+# minimal subset matrix
+# ------------------------------------------------------------
+
+idx_best = [
+    features.index(f)
+    for f in best_subset
+]
+
+X_min = X_full[:, idx_best]
+
+# ------------------------------------------------------------
+# preprocessing
+# ------------------------------------------------------------
+
+scaler = StandardScaler()
+
+X_scaled = scaler.fit_transform(X_min)
+
+X_w, W = whiten(X_scaled)
+
+# ------------------------------------------------------------
+# reaction coordinate
+# ------------------------------------------------------------
+
+rc_model = LinearRegression()
+
+rc_model.fit(X_w, y_full)
+
+w_rc = rc_model.coef_
+
+w_rc /= (
+    np.linalg.norm(w_rc)
+    + 1e-8
 )
 
-    
-# ============================================================
-# RC STABILITY
-# ============================================================
+phi = X_w @ w_rc
 
-banner("RC STABILITY")
+
+rp_xi, p_xi = pearsonr(phi, y_full)
+
+print(f"Rp(xi, ddG) = {rp_xi:.2f}")
+
+# ------------------------------------------------------------
+# ΔΔG model
+# ------------------------------------------------------------
+
+
 
 loo = LeaveOneOut()
+pred = np.zeros(len(y_full))
 
-w_all = []
-
-for tr, te in loo.split(X_full):
-
-    # --------------------------------------------------------
-    # preprocessing
-    # --------------------------------------------------------
-
-    scaler = StandardScaler()
-
-    Xtr_scaled = scaler.fit_transform(X_full[tr])
-
-    lw = LedoitWolf().fit(Xtr_scaled)
-
-    cov = lw.covariance_
-
-    U, S, _ = np.linalg.svd(cov)
-
-    W = (
-        U
-        @ np.diag(1.0 / np.sqrt(S + 1e-6))
-        @ U.T
-    )
-
-    Xtr_w = Xtr_scaled @ W
-
-    # --------------------------------------------------------
-    # fit RC direction
-    # --------------------------------------------------------
+for tr, te in loo.split(phi):
 
     model = LinearRegression()
 
     model.fit(
-        Xtr_w,
+        phi[tr].reshape(-1, 1),
         y_full[tr]
     )
 
-    w = model.coef_
-
-    # normalize direction
-    w /= (
-        np.linalg.norm(w)
-        + 1e-8
+    pred[te] = model.predict(
+        phi[te].reshape(-1, 1)
     )
+# ============================================================
+# STATISTICAL SIGNIFICANCE
+# ============================================================
 
-    w_all.append(w)
+n = len(y_full)
+p = 2
+
+rss = np.sum((y_full - pred) ** 2)
+
+sigma2 = rss / (n - p)
+
+X_design = np.column_stack([
+    phi,
+    np.ones(n)
+])
+
+cov_beta = sigma2 * np.linalg.inv(
+    X_design.T @ X_design
+)
+
+se_a = np.sqrt(cov_beta[0, 0])
+se_b = np.sqrt(cov_beta[1, 1])
+
+t_a = a / se_a
+t_b = b / se_b
+
+from scipy.stats import t
+
+dfree = n - p
+
+p_a = 2 * (
+    1 - t.cdf(np.abs(t_a), df=dfree)
+)
+
+p_b = 2 * (
+    1 - t.cdf(np.abs(t_b), df=dfree)
+)
 
 # ------------------------------------------------------------
-# aggregate
+# confidence intervals
 # ------------------------------------------------------------
 
-w_all = np.array(w_all)
+tcrit = t.ppf(0.975, df=dfree)
 
-w_mean = np.mean(w_all, axis=0)
+ci_a = (
+    a - tcrit * se_a,
+    a + tcrit * se_a
+)
 
-w_std = np.std(w_all, axis=0)
+ci_b = (
+    b - tcrit * se_b,
+    b + tcrit * se_b
+)
 
-rc_stability = pd.DataFrame({
+# ============================================================
+# MODEL PERFORMANCE
+# ============================================================
 
-    "feature": features,
+rmse_phi = np.sqrt(
+    mean_squared_error(y_full, pred)
+)
 
-    "mean_weight": w_mean,
+r2_phi = r2_score(y_full, pred)
 
-    "std_weight": w_std,
+rp_phi, rp_p = pearsonr(
+    y_full,
+    pred
+)
 
-    "stability_ratio":
-        np.abs(w_mean) / (w_std + 1e-8),
+# ============================================================
+# PRINT SUMMARY
+# ============================================================
 
-    "sign_consistency": [
+print("FREE-ENERGY EQUATION")
+print("--------------------------------")
 
-        max(
-            np.mean(w_all[:, i] > 0),
-            np.mean(w_all[:, i] < 0)
-        )
+print(
+    f"ΔΔG = ({a:.2f})φ {b:+.2f}"
+)
 
-        for i in range(len(features))
+
+print("\nPARAMETER SIGNIFICANCE")
+print("----------------------")
+
+summary_stats = pd.DataFrame({
+
+    "parameter": ["a", "b"],
+
+    "estimate": [a, b],
+
+    "std_error": [se_a, se_b],
+
+    "t_stat": [t_a, t_b],
+
+    "p_value": [p_a, p_b],
+
+    "CI_low": [
+        ci_a[0],
+        ci_b[0]
+    ],
+
+    "CI_high": [
+        ci_a[1],
+        ci_b[1]
     ]
 })
 
-rc_stability = rc_stability.sort_values(
-    "stability_ratio",
-    ascending=False
+print(summary_stats.round(4))
+
+summary_stats.to_csv(
+    f"{OUTDIR}/dG_significance.csv",
+    index=False
 )
 
-print(rc_stability.round(2))
-
-
-
 
 # ============================================================
-# RC PARAMETER STABILITY
+# PARAMETER SENSITIVITY ANALYSIS
 # ============================================================
 
-banner("RC PARAMETER STABILITY")
+banner("PARAMETER SENSITIVITY ANALYSIS")
 
-loo = LeaveOneOut()
+# ------------------------------------------------------------
+# parameter grids
+# ------------------------------------------------------------
 
-a_all = []
-b_all = []
+KAPPA_GRID = [
+    0.05,
+    0.08,
+    0.10,
+    0.12,
+    0.15
+]
 
-for tr, te in loo.split(X_full):
+EPS_IN_GRID = [
+    2.0,
+    4.0,
+    6.0,
+    8.0,
+    10.0
+]
+
+LAMBDA_GRID = [
+    4.0,
+    5.0,
+    7.0,
+    9.0,
+    12.0
+]
+
+R_EFF_GRID = [
+    1.5,
+    2.0,
+    2.5,
+    3.0
+]
+
+# ============================================================
+# FEATURE GENERATION UNDER VARIABLE PHYSICS
+# ============================================================
+
+def dielectric_scan(r, eps_in, lambda_val):
+
+    return (
+        EPS_OUT
+        - (EPS_OUT - eps_in)
+        * np.exp(-r / lambda_val)
+    )
+
+# ------------------------------------------------------------
+
+def screened_coulomb_scan(
+    q,
+    r,
+    kappa_val,
+    eps_in,
+    lambda_val
+):
+
+    return (
+        COULOMB
+        * q
+        * np.exp(-kappa_val * r)
+        / (
+            dielectric_scan(
+                r,
+                eps_in,
+                lambda_val
+            ) * r
+        )
+    )
+
+# ------------------------------------------------------------
+
+def potential_scan(
+    coord_i,
+    exclude_index,
+    kappa_val,
+    eps_in,
+    lambda_val
+):
+
+    phi = 0.0
+
+    for rid_j, res_j, coord_j in residues:
+
+        if rid_j == exclude_index:
+            continue
+
+        aa = aa_map.get(
+            res_j.get_resname(),
+            None
+        )
+
+        if aa is None:
+            continue
+
+        q = charge.get(aa, 0)
+
+        if q == 0:
+            continue
+
+        r = np.linalg.norm(
+            coord_i - coord_j
+        )
+
+        if r < 1e-6:
+            continue
+
+        phi += screened_coulomb_scan(
+            q,
+            r,
+            kappa_val,
+            eps_in,
+            lambda_val
+        )
+
+    return phi
+
+# ------------------------------------------------------------
+
+def generate_feature_matrix(
+    kappa_val,
+    eps_in,
+    lambda_val,
+    r_eff_val
+):
+
+    rows_scan = []
+
+    for mut, resi in mutations:
+
+        coord_i = next(
+            coord
+            for rid, _, coord in residues
+            if rid == resi
+        )
+
+        wt = mut[0]
+        mt = mut[-1]
+
+        dq = (
+            charge.get(mt, 0)
+            - charge.get(wt, 0)
+        )
+
+        # ----------------------------------------------------
+        # electrostatic potential
+        # ----------------------------------------------------
+
+        phi = potential_scan(
+            coord_i,
+            resi,
+            kappa_val,
+            eps_in,
+            lambda_val
+        )
+
+        # ----------------------------------------------------
+        # calcium interaction
+        # ----------------------------------------------------
+
+        r_ca = np.linalg.norm(
+            coord_i - ca_pos
+        )
+
+        e_ca = (
+            COULOMB
+            * dq
+            * CA_CHARGE
+            * np.exp(-kappa_val * r_ca)
+            / (
+                dielectric_scan(
+                    r_ca,
+                    eps_in,
+                    lambda_val
+                ) * r_ca
+            )
+        )
+
+        # ----------------------------------------------------
+        # born term
+        # ----------------------------------------------------
+
+        born = (
+            (dq ** 2)
+            * (
+                1 / eps_in
+                - 1 / EPS_OUT
+            )
+            / (
+                2 * r_eff_val
+            )
+        )
+
+        rows_scan.append([
+
+            dq * phi,
+
+            e_ca,
+
+            born,
+
+            phi ** 2
+        ])
+
+    return np.array(rows_scan)
+
+# ============================================================
+# PARAMETER SCAN
+# ============================================================
+
+scan_results = []
+
+parameter_combinations = list(
+    itertools.product(
+
+        KAPPA_GRID,
+
+        EPS_IN_GRID,
+
+        LAMBDA_GRID,
+
+        R_EFF_GRID
+    )
+)
+
+print(
+    f"[INFO] Total parameter combinations: "
+    f"{len(parameter_combinations)}"
+)
+
+for (
+    kappa_val,
+    eps_in,
+    lambda_val,
+    r_eff_val
+) in tqdm(
+    parameter_combinations,
+    desc="Parameter scan"
+):
 
     # --------------------------------------------------------
-    # scaling
+    # generate feature matrix
+    # --------------------------------------------------------
+
+    X_scan = generate_feature_matrix(
+
+        kappa_val,
+
+        eps_in,
+
+        lambda_val,
+
+        r_eff_val
+    )
+
+    # --------------------------------------------------------
+    # evaluate reduced physics model
+    # --------------------------------------------------------
+
+    rmse_scan, r2_scan, rp_scan, _, stderr_scan = (
+        compute_loocv_metrics(
+            X_scan,
+            y_full
+        )
+    )
+
+    scan_results.append({
+
+        "kappa": kappa_val,
+
+        "eps_in": eps_in,
+
+        "lambda": lambda_val,
+
+        "r_eff": r_eff_val,
+
+        "rmse": rmse_scan,
+
+        "r2": r2_scan,
+
+        "rp": rp_scan,
+
+        "stderr": stderr_scan
+    })
+
+# ============================================================
+# RESULTS DATAFRAME
+# ============================================================
+
+df_scan = pd.DataFrame(
+    scan_results
+)
+
+df_scan = df_scan.sort_values(
+    "rmse"
+)
+
+# ============================================================
+# SAVE RESULTS
+# ============================================================
+
+df_scan.to_csv(
+    f"{OUTDIR}/parameter_scan.csv",
+    index=False
+)
+
+# ============================================================
+# BEST PARAMETER SETS
+# ============================================================
+
+banner("BEST PARAMETER SETS")
+
+print(
+    df_scan.head(10).round(3)
+)
+
+# ============================================================
+# PARAMETER ROBUSTNESS
+# ============================================================
+
+banner("PARAMETER ROBUSTNESS")
+
+robustness = {
+
+    "RMSE_mean":
+        df_scan["rmse"].mean(),
+
+    "RMSE_std":
+        df_scan["rmse"].std(),
+
+    "Rp_mean":
+        df_scan["rp"].mean(),
+
+    "Rp_std":
+        df_scan["rp"].std(),
+
+    "R2_mean":
+        df_scan["r2"].mean(),
+
+    "R2_std":
+        df_scan["r2"].std()
+}
+
+for k, v in robustness.items():
+
+    print(f"{k}: {v:.3f}")
+
+# ============================================================
+# TOP PARAMETER FREQUENCY
+# ============================================================
+
+banner("TOP PARAMETER FREQUENCY")
+
+top_fraction = int(
+    0.10 * len(df_scan)
+)
+
+df_top = df_scan.head(top_fraction)
+
+for param in [
+    "kappa",
+    "eps_in",
+    "lambda",
+    "r_eff"
+]:
+
+    print(f"\n[{param}]")
+
+    freq = (
+        df_top[param]
+        .value_counts(normalize=True)
+        .sort_index()
+    )
+
+    print(freq.round(3))
+
+# ============================================================
+# SUMMARY EXPORT
+# ============================================================
+
+robustness_df = pd.DataFrame([robustness])
+
+robustness_df.to_csv(
+    f"{OUTDIR}/parameter_robustness.csv",
+    index=False
+)
+
+print("\n[INFO] Parameter scan complete.")
+
+# ============================================================
+# ELECTROSTATIC RESIDUE INTERPRETATION
+# ============================================================
+
+def classify_electrostatic_sector(
+    e_ca,
+    phi_sq,
+    e_perp,
+    ddg,
+    distance_to_ca
+):
+
+    # --------------------------------------------
+    # coordination electrostatic disruption
+    # --------------------------------------------
+
+    if (
+        distance_to_ca < 8.0
+        and ddg > 0.5
+    ):
+
+        return "coordination electrostatic disruption"
+
+    # --------------------------------------------
+    # directional field frustration
+    # --------------------------------------------
+
+    if (
+        abs(e_perp) > np.percentile(
+            np.abs(df["E_perp"]),
+            75
+        )
+        and ddg > 0
+    ):
+
+        return "directional field frustration"
+
+    # --------------------------------------------
+    # dielectric compensation
+    # --------------------------------------------
+
+    if (
+        ddg < -0.5
+        and phi_sq > np.median(df["phi_sq"])
+    ):
+
+        return "dielectric compensation"
+
+    # --------------------------------------------
+    # weak perturbation
+    # --------------------------------------------
+
+    return "weak electrostatic perturbation"
+
+
+# ============================================================
+
+def generate_electrostatic_interpretation_table():
+
+    print(
+        "\n[INFO] Generating electrostatic "
+        "interpretation table..."
+    )
+
+    # --------------------------------------------------------
+    # reaction coordinate projection
     # --------------------------------------------------------
 
     scaler = StandardScaler()
 
-    Xtr_scaled = scaler.fit_transform(
-        X_full[tr]
+    X_scaled = scaler.fit_transform(
+        X_best
     )
 
-    Xte_scaled = scaler.transform(
-        X_full[te]
-    )
+    X_w, W = whiten(X_scaled)
 
-    # --------------------------------------------------------
-    # whitening
-    # --------------------------------------------------------
+    phi_rc = X_w @ w_rc
 
-    lw = LedoitWolf().fit(Xtr_scaled)
+    rows = []
 
-    cov = lw.covariance_
+    for i, row in df.iterrows():
 
-    U, S, _ = np.linalg.svd(cov)
+        mutant = row["mutant"]
 
-    W = (
-        U
-        @ np.diag(
-            1.0 / np.sqrt(S + 1e-6)
+        resi = row["resi"]
+
+        coord_i = next(
+            coord
+            for rid, _, coord in residues
+            if rid == resi
         )
-        @ U.T
-    )
 
-    Xtr_w = Xtr_scaled @ W
-
-    Xte_w = Xte_scaled @ W
-
-    # --------------------------------------------------------
-    # RC direction
-    # --------------------------------------------------------
-
-    rc_model = LinearRegression()
-
-    rc_model.fit(
-        Xtr_w,
-        y_full[tr]
-    )
-
-    w = rc_model.coef_
-
-    w /= (
-        np.linalg.norm(w)
-        + 1e-8
-    )
-
-    # --------------------------------------------------------
-    # RC coordinate
-    # --------------------------------------------------------
-
-    xi_tr = Xtr_w @ w
-
-    # --------------------------------------------------------
-    # free-energy fit
-    # --------------------------------------------------------
-
-    energy_model = LinearRegression()
-
-    energy_model.fit(
-        xi_tr.reshape(-1, 1),
-        y_full[tr]
-    )
-
-    a_all.append(
-        energy_model.coef_[0]
-    )
-
-    b_all.append(
-        energy_model.intercept_
-    )
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-a_all = np.array(a_all)
-b_all = np.array(b_all)
-
-summary_rc = pd.DataFrame({
-
-    "parameter": ["a", "b"],
-
-    "mean": [
-        np.mean(a_all),
-        np.mean(b_all)
-    ],
-
-    "std": [
-        np.std(a_all),
-        np.std(b_all)
-    ],
-
-    "stability_ratio": [
-
-        np.abs(np.mean(a_all))
-        / (np.std(a_all) + 1e-8),
-
-        np.abs(np.mean(b_all))
-        / (np.std(b_all) + 1e-8)
-    ],
-
-    "sign_consistency": [
-
-        max(
-            np.mean(a_all > 0),
-            np.mean(a_all < 0)
-        ),
-
-        max(
-            np.mean(b_all > 0),
-            np.mean(b_all < 0)
+        distance_to_ca = np.linalg.norm(
+            coord_i - ca_pos
         )
-    ]
+
+        sector = classify_electrostatic_sector(
+
+            row["E_ca"],
+
+            row["phi_sq"],
+
+            row["E_perp"],
+
+            row["ddG_exp"],
+
+            distance_to_ca
+        )
+
+        # ----------------------------------------------------
+        # INTERPRETATION TEXT
+        # ----------------------------------------------------
+
+        if sector == (
+            "coordination electrostatic disruption"
+        ):
+
+            interpretation = (
+                "Disruption of Ca-coupled "
+                "electrostatic stabilization "
+                "through coordination-shell "
+                "field perturbation"
+            )
+
+        elif sector == (
+            "directional field frustration"
+        ):
+
+            interpretation = (
+                "Strong anisotropic field "
+                "redistribution associated "
+                "with electrostatic frustration"
+            )
+
+        elif sector == (
+            "dielectric compensation"
+        ):
+
+            interpretation = (
+                "Favorable dielectric "
+                "reorganization and "
+                "electrostatic compensation"
+            )
+
+        else:
+
+            interpretation = (
+                "Weak electrostatic perturbation "
+                "with limited field reorganization"
+            )
+
+        rows.append({
+
+            "mutant": mutant,
+
+            "ddG_exp": row["ddG_exp"],
+
+            "RC_projection": phi_rc[i],
+
+            "E_ca": row["E_ca"],
+
+            "phi_sq": row["phi_sq"],
+
+            "E_parallel": row["E_parallel"],
+
+            "E_perp": row["E_perp"],
+
+            "dq_phi": row["dq_phi"],
+
+            "distance_to_Ca": distance_to_ca,
+
+            "electrostatic_sector": sector,
+
+            "interpretation": interpretation
+        })
+
+    df_out = pd.DataFrame(rows)
+
+    # --------------------------------------------------------
+    # rank ordering
+    # --------------------------------------------------------
+
+    df_out = df_out.sort_values(
+        by="RC_projection",
+        ascending=False
+    )
+
+    # --------------------------------------------------------
+    # RC extremeness
+    # --------------------------------------------------------
+
+    q_low = df_out["RC_projection"].quantile(0.25)
+
+    q_high = df_out["RC_projection"].quantile(0.75)
+
+    df_out["extreme_class"] = "middle"
+
+    df_out.loc[
+        df_out["RC_projection"] >= q_high,
+        "extreme_class"
+    ] = "electrostatic_destabilizing_extreme"
+
+    df_out.loc[
+        df_out["RC_projection"] <= q_low,
+        "extreme_class"
+    ] = "electrostatic_stabilizing_extreme"
+
+    # --------------------------------------------------------
+    # save
+    # --------------------------------------------------------
+
+    df_out.to_csv(
+
+        f"{OUTDIR}/electrostatic_residue_interpretation.csv",
+
+        index=False
+    )
+
+    print(
+        "[INFO] Written: "
+        "electrostatic_residue_interpretation.csv"
+    )
+
+    return df_out
+
+generate_electrostatic_interpretation_table()
+# ============================================================
+# ATOM-WISE ELECTROSTATIC COMPARISON (MINIMAL, FAST)
+# ============================================================
+
+banner("ATOM-WISE FEATURE GENERATION (MINIMAL MODEL)")
+
+# ------------------------------------------------------------
+# simple atom-wise charge model (heuristic, no force-field)
+# ------------------------------------------------------------
+
+def atom_charge(atom):
+    name = atom.get_name().strip()
+    element = atom.element.strip() if atom.element else ""
+
+    # backbone
+    if name == "N":
+        return +0.3
+    if name == "O":
+        return -0.5
+
+    # side-chain heuristics
+    if element == "O":
+        return -0.5
+    if element == "N":
+        return +0.3
+    if element == "S":
+        return -0.2
+
+    return 0.0
+
+
+
+# ------------------------------------------------------------
+# atom list (heavy atoms only)
+# ------------------------------------------------------------
+
+atoms = [
+    atom for atom in structure.get_atoms()
+    if atom.element != "H"
+]
+
+print(f"[INFO] Total heavy atoms: {len(atoms)}")
+
+
+# ------------------------------------------------------------
+# atom-wise potential
+# ------------------------------------------------------------
+
+def potential_atomwise(coord_i, exclude_resi):
+
+    phi = 0.0
+
+    for atom_j in atoms:
+
+        res_j = atom_j.get_parent()
+        rid_j = res_j.id[1]
+
+        if rid_j == exclude_resi:
+            continue
+
+        q = atom_charge(atom_j)
+
+        if q == 0:
+            continue
+
+        r = np.linalg.norm(coord_i - atom_j.coord)
+
+        if r < 1e-6:
+            continue
+
+        phi += (
+            COULOMB
+            * q
+            * np.exp(-KAPPA * r)
+            / (dielectric(r) * r)
+        )
+
+    return phi
+
+
+# ------------------------------------------------------------
+# atom-wise feature generation
+# ------------------------------------------------------------
+
+rows_atom = []
+
+for mut, resi in tqdm(mutations, desc="Atom-wise features"):
+
+    coord_i = next(
+        coord
+        for rid, _, coord in residues
+        if rid == resi
+    )
+
+    wt = mut[0]
+    mt = mut[-1]
+
+    dq = charge.get(mt, 0) - charge.get(wt, 0)
+
+    # atom-wise electrostatic potential
+    phi_atom = potential_atomwise(coord_i, resi)
+
+    # Ca interaction (same definition)
+    r_ca = np.linalg.norm(coord_i - ca_pos)
+
+    E_ca_atom = (
+        COULOMB
+        * dq
+        * CA_CHARGE
+        * np.exp(-KAPPA * r_ca)
+        / (dielectric(r_ca) * r_ca)
+    )
+
+    # Born term (same)
+    born_atom = (
+        (dq ** 2)
+        * (1 / EPS_IN - 1 / EPS_OUT)
+        / (2 * R_EFF)
+    )
+
+    rows_atom.append([
+        dq * phi_atom,
+        E_ca_atom,
+        born_atom,
+        phi_atom ** 2,
+        exp_data[mut] - exp_data["WT"]
+    ])
+
+
+# ------------------------------------------------------------
+# dataframe
+# ------------------------------------------------------------
+
+df_atom = pd.DataFrame(rows_atom, columns=[
+    "dq_phi",
+    "E_ca",
+    "born",
+    "phi_sq",
+    "ddG_exp"
+])
+
+X_atom = df_atom[["dq_phi", "E_ca", "born", "phi_sq"]].values
+y_atom = df_atom["ddG_exp"].values
+
+
+# ------------------------------------------------------------
+# evaluation (same pipeline)
+# ------------------------------------------------------------
+
+rmse_atom, r2_atom, rp_atom, _, stderr_atom = compute_loocv_metrics(
+    X_atom,
+    y_atom
+)
+
+banner("ATOM-WISE MODEL PERFORMANCE")
+
+print(f"RMSE   = {rmse_atom:.2f}")
+print(f"R²     = {r2_atom:.2f}")
+print(f"Rₚ     = {rp_atom:.2f}")
+print(f"StdErr = {stderr_atom:.2f}")
+
+
+# ------------------------------------------------------------
+# comparison table (LaTeX-ready)
+# ------------------------------------------------------------
+
+comparison_df = pd.DataFrame({
+
+    "Model": ["Residue-level", "Atom-wise"],
+
+    "RMSE": [rmse_full, rmse_atom],
+
+    "R2": [r2_full, r2_atom],
+
+    "Rp": [rp_full, rp_atom]
 })
 
-print(summary_rc.round(3))
+print("\nCOMPARISON TABLE")
+print(comparison_df.round(2))
 
-summary_rc.to_csv(
-    f"{OUTDIR}/rc_parameter_stability.csv",
+comparison_df.to_csv(
+    f"{OUTDIR}/residue_vs_atomwise_comparison.csv",
     index=False
 )
-# ============================================================
-# COMPLETE
-# ============================================================
 
 banner("PIPELINE COMPLETE")
 
-print(f"[INFO] Outputs saved → {OUTDIR}")
+
+

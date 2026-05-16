@@ -1685,16 +1685,6 @@ def plot_three_panel_figure(
     print(f"[SAVED] {output_file}")
 
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import r2_score
-from sklearn.inspection import permutation_importance
-from tqdm import tqdm
-
 
 # =========================================
 # 3D PLOT
@@ -1888,130 +1878,69 @@ def main():
     global OUTPUT_DIR
 
     OUTPUT_DIR = Path(CFG.output_dir)
-
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     section("LOAD DATA")
 
-    enm = load_dataset(
-        "enm_all_raw_features_best_parameters.csv"
-    )
+    enm = load_dataset("enm_all_raw_features_best_parameters.csv")
+    elc = load_dataset("raw_features.csv")
+    struct = load_dataset("structural_features_full.csv")
 
-    elc = load_dataset(
-        "raw_features.csv"
-    )
+    df = merge_feature_domains(enm, elc, struct)
 
-    struct = load_dataset(
-        "structural_features_full.csv"
-    )
-
-
-    df = merge_feature_domains(
-        enm,
-        elc,
-        struct,
-    )
-    print(df)
-    df["ddG_exp"] = (
-        df.filter(regex="ddG_exp")
-        .iloc[:, 0]
-    )
-
+    df["ddG_exp"] = df.filter(regex="ddG_exp").iloc[:, 0]
     y = df["ddG_exp"].values
 
+    # =========================================================
+    # FEATURE SETS
+    # =========================================================
     f_enm = [
-        'comm_eff',
-        'f_collective',
-        'f_asym',
-        'prs_sens',
-        'f_entropy',
-        'mut_ca_coupling',
-        'prs_eff',
-        'f_local',
-        'sq_fluct'
+        'comm_eff','f_collective','f_asym','prs_sens',
+        'f_entropy','mut_ca_coupling','prs_eff','f_local','sq_fluct'
     ]
 
     f_elc = [
-        "E_ca",
-        "phi_sq",
-        "dq_phi",
-        "born",
-        "E_mag",
-        "E_parallel",
-        "E_perp"
+        "E_ca","phi_sq","dq_phi","born",
+        "E_mag","E_parallel","E_perp"
     ]
 
     f_struct = [
-        "inv_distance",
-        "volume_change",
-        "steric_energy",
-        "local_density",
-        "coordination_number",
-        "backbone_angle"
+        "inv_distance","volume_change","steric_energy",
+        "local_density","coordination_number","backbone_angle"
     ]
 
+    feature_names = f_struct + f_elc + f_enm
 
+    # =========================================================
+    # 1. SUBSET SEARCH (GLOBAL DISCOVERY)
+    # =========================================================
+    section("SUBSET SEARCH")
 
-    feature_names = (
-        f_struct +
-        f_elc +
-        f_enm )
-
-    all_results = exhaustive_subset_search(df,y,feature_names)
+    all_results = exhaustive_subset_search(df, y, feature_names)
 
     results_df = build_results_table(all_results)
+    save_dataframe(results_df, "strict_best_subset_models.csv")
 
-    save_dataframe(results_df,"strict_best_subset_models.csv")
-
-    results_df.to_json(OUTPUT_DIR / "strict_best_subset_models.json",orient="records",indent=2)
+    results_df.to_json(
+        OUTPUT_DIR / "strict_best_subset_models.json",
+        orient="records",
+        indent=2
+    )
 
     print_top_models(results_df)
 
-    best_result = all_results[0]
+    best_subset_result = all_results[0]
 
-    section("BEST MODEL")
+    section("BEST SUBSET MODEL")
+    print(best_subset_result["features"])
+    print(f"Rp = {best_subset_result['metrics']['Rp']:.3f}")
 
-    print(best_result["features"])
+    # =========================================================
+    # 2. FIXED PHYSICAL MODEL (FOR PUBLICATION)
+    # =========================================================
+    section("PHYSICALLY CONSISTENT MODEL")
 
-    print(f"Rp={best_result['metrics']['Rp']:.3f}")
-    section("USING FIXED FEATURE SET (NO SUBSET SEARCH)")
-
-    # ---- choose features (same as manifold for consistency)
     selected_features = [
-    'volume_change',
-    'steric_energy',
-    'E_ca',
-    'phi_sq',
-    'E_perp'
-    ]
-
-    print("Selected features:")
-    print(selected_features)
-
-    # ---- evaluate once using strict pipeline
-    best_result = evaluate_subset_strict(
-    df,
-    y,
-    selected_features
-    )
-
-    print(f"Rp = {best_result['metrics']['Rp']:.3f}")
-
-    publication = build_publication_model(df,y,best_result)
-
-    print_publication_model(best_result,publication)
-
-    coef_df = compute_rc_uncertainty(publication,len(y))
-
-    print_rc_uncertainty(coef_df,publication)
-
-    save_dataframe(coef_df,"canonical_rc_coefficients.csv")
-    run_correlation_analysis(df,feature_names)
-
-    manifold_features = [
         'volume_change',
         'steric_energy',
         'E_ca',
@@ -2019,41 +1948,73 @@ def main():
         'E_perp'
     ]
 
-    manifold = run_manifold_geometry(df,manifold_features)
+    print("Selected features:", selected_features)
 
+    fixed_result = evaluate_subset_strict(df, y, selected_features)
 
-    benchmark_models(df,manifold_features,y)
+    print(f"Rp = {fixed_result['metrics']['Rp']:.3f}")
 
+    # =========================================================
+    # 3. BUILD PUBLICATION MODEL
+    # =========================================================
+    publication = build_publication_model(df, y, fixed_result)
 
-    #generate_energetic_manifold_figure(df,y,f_struct,f_elc,f_enm,publication)
+    print_publication_model(fixed_result, publication)
 
-    proj_df = run_sector_projection_analysis(df,publication)
-    struct_features = [
-    "inv_distance",
-    "volume_change",
-    "steric_energy"
-    ]
+    coef_df = compute_rc_uncertainty(publication, len(y))
+    print_rc_uncertainty(coef_df, publication)
 
-    elec_features = [
-    "E_ca",
-    "phi_sq"
-    ]
+    save_dataframe(coef_df, "canonical_rc_coefficients.csv")
 
-    dyn_features = ['comm_eff', 'f_collective', 'f_entropy', 'prs_sens']
+    # =========================================================
+    # 4. CORRELATION + MANIFOLD
+    # =========================================================
+    run_correlation_analysis(df, feature_names)
 
-    proj_df = build_RC_projections(df,struct_features,elec_features,dyn_features)
-    run_full_RC_pipeline(proj_df)
+    manifold_features = selected_features
+
+    manifold = run_manifold_geometry(df, manifold_features)
+
+    # =========================================================
+    # 5. MODEL BENCHMARKING
+    # =========================================================
+    benchmark_models(df, manifold_features, y)
+
+    # =========================================================
+    # 6. SECTOR PROJECTION (KEEP PHYSICS)
+    # =========================================================
+    proj_weighted = run_sector_projection_analysis(df, publication)
+
+    # =========================================================
+    # 7. OPTIONAL: MANUAL PROJECTION (SEPARATE OBJECT)
+    # =========================================================
+    struct_features = ["inv_distance","volume_change","steric_energy"]
+    elec_features   = ["E_ca","phi_sq"]
+    dyn_features    = ['comm_eff','f_collective','f_entropy','prs_sens']
+
+    proj_manual = build_RC_projections(
+        df,
+        struct_features,
+        elec_features,
+        dyn_features
+    )
+
+    # =========================================================
+    # 8. FINAL FIGURES (USE PHYSICAL RC)
+    # =========================================================
+    run_full_RC_pipeline(proj_weighted)
+
     plot_three_panel_figure(
-    df,
-    y,
-    publication,
-    best_result,
-    selected_features,
-    output_file="figure_3panel.png")
+        df,
+        y,
+        publication,
+        fixed_result,
+        selected_features,
+        output_file="figure_3panel.png"
+    )
+
     section("PIPELINE COMPLETE")
-    
 
 
 if __name__ == "__main__":
-
     main()
