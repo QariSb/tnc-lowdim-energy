@@ -14,10 +14,11 @@ import statsmodels.api as sm
 from Bio.PDB import PDBParser
 from numpy.linalg import norm
 from scipy.stats import pearsonr
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import LeaveOneOut
 from sklearn.preprocessing import StandardScaler
+from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 
 # ============================================================
@@ -217,10 +218,7 @@ def run_loocv_linear(X, y):
     predictions = np.zeros(len(y))
 
     for train, test in loo.split(X):
-        scaler = StandardScaler()
-
-        Xtr = scaler.fit_transform(X[train])
-        Xte = scaler.transform(X[test])
+        Xtr, Xte = whiten_descriptors(X[train],X[test])
 
         reg = LinearRegression()
         reg.fit(Xtr, y[train])
@@ -231,22 +229,38 @@ def run_loocv_linear(X, y):
 
 
 
-def run_loocv_ridge(X, y, alpha=0.5):
-    loo = LeaveOneOut()
-    predictions = np.zeros(len(y))
 
-    for train, test in loo.split(X):
-        scaler = StandardScaler()
 
-        Xtr = scaler.fit_transform(X[train])
-        Xte = scaler.transform(X[test])
+# ============================================================
+# LEDOIT-WOLF WHITENING
+# ============================================================
 
-        reg = Ridge(alpha=alpha)
-        reg.fit(Xtr, y[train])
+def whiten_descriptors(X_train, X_test):
 
-        predictions[test] = reg.predict(Xte)
+    scaler = StandardScaler()
 
-    return predictions
+    Xtr = scaler.fit_transform(X_train)
+    Xte = scaler.transform(X_test)
+
+    lw = LedoitWolf()
+    lw.fit(Xtr)
+
+    covariance = lw.covariance_
+
+    eigvals, eigvecs = np.linalg.eigh(covariance)
+
+    eigvals = np.clip(eigvals, EPS, None)
+
+    whitening_matrix = (
+        eigvecs
+        @ np.diag(1.0 / np.sqrt(eigvals))
+        @ eigvecs.T
+    )
+
+    Xtr_white = Xtr @ whitening_matrix
+    Xte_white = Xte @ whitening_matrix
+
+    return Xtr_white, Xte_white
 
 # ============================================================
 # STRUCTURE LOADING
@@ -727,10 +741,7 @@ def run_reaction_coordinate_model(df):
     phi_all = np.zeros(len(y))
 
     for train, test in tqdm(loo.split(X), total=len(y), desc="RC LOOCV"):
-        scaler = StandardScaler()
-
-        Xtr = scaler.fit_transform(X[train])
-        Xte = scaler.transform(X[test])
+        Xtr, Xte = whiten_descriptors(X[train],X[test])
 
         ytr = y[train]
 
@@ -912,17 +923,6 @@ def analyze_rc_coefficients(df):
         f"{cosine_similarities.min():.4f}"
     )
 
-    # ============================================================
-    # LATEX-FORMATTED RC EQUATION
-    # ============================================================
-
-    print("\n[REACTION COORDINATE EQUATION]\n")
-
-    feature_labels = [
-        r"\tilde{d}^{-1}",
-        r"\tilde{E}_{\mathrm{steric}}",
-        r"\Delta \tilde{V}"
-    ]
 
     terms = []
 
@@ -953,24 +953,6 @@ def analyze_rc_coefficients(df):
     )
 
 
-
-    # ============================================================
-    # NORMALIZED RC EQUATION
-    # ============================================================
-
-    # --------------------------------------------------------
-    # NORMALIZE MEAN RC VECTOR
-    # --------------------------------------------------------
-
-    w_norm = w_mean / np.linalg.norm(w_mean)
-
-    print("\n[NORMALIZED REACTION COORDINATE]\n")
-
-    feature_labels = [
-        r"\tilde{d}^{-1}",
-        r"\tilde{E}_{\mathrm{steric}}",
-        r"\Delta \tilde{V}"
-    ]
 
     terms = []
 
@@ -1389,6 +1371,252 @@ def compare_full_vs_rc_model(df):
         "w_p": w_p
     }
 
+
+
+# ============================================================
+# RESIDUE-WISE STRUCTURAL INTERPRETATION
+# ============================================================
+
+def classify_structural_sector(
+    inv_distance,
+    steric_energy,
+    ddg
+):
+
+    approx_distance = 1.0 / (inv_distance + EPS)
+
+    if approx_distance < 6.0:
+        return "coordination disruption"
+
+    if ddg < -0.5:
+        return "compensatory packing"
+
+    if steric_energy < -0.3:
+        return "steric frustration"
+
+    return "intermediate"
+
+
+def generate_structural_interpretation_table(
+    df,
+    rc_vector
+):
+
+    print(
+        "\n[INFO] Generating residue-wise "
+        "structural interpretation table..."
+    )
+
+    X = df[BASE_FEATURES].values
+
+    scaler = StandardScaler()
+
+    X_scaled = scaler.fit_transform(X)
+
+    phi = X_scaled @ rc_vector
+
+    rows = []
+
+    for i, row in df.iterrows():
+
+        mutant = row["mutant"]
+
+        inv_distance = row["inv_distance"]
+
+        steric_energy = row["steric_energy"]
+
+        volume_change = row["volume_change"]
+
+        ddg = row["ddG_exp"]
+
+        approx_distance = (
+            1.0 / (inv_distance + EPS)
+        )
+
+        coord_shell = (
+            "yes"
+            if approx_distance < 6.0
+            else "no"
+        )
+
+        sector = classify_structural_sector(
+            inv_distance,
+            steric_energy,
+            ddg
+        )
+
+        # ----------------------------------------------------
+        # INTERPRETATION TEXT
+        # ----------------------------------------------------
+
+        if sector == "coordination disruption":
+
+            interpretation = (
+                "Direct coordination-shell "
+                "destabilization through "
+                "geometric and steric disruption"
+            )
+
+        elif sector == "compensatory packing":
+
+            interpretation = (
+                "Distal stabilizing mutation "
+                "associated with compensatory "
+                "packing reorganization"
+            )
+
+        elif sector == "steric frustration":
+
+            interpretation = (
+                "Steric frustration dominates "
+                "the structural perturbation"
+            )
+
+        else:
+
+            interpretation = (
+                "Moderate structural perturbation "
+                "with mixed geometric contributions"
+            )
+
+        rows.append({
+
+            "mutant": mutant,
+
+            "ddG_exp": ddg,
+
+            "RC_projection": phi[i],
+
+            "inv_distance": inv_distance,
+
+            "steric_energy": steric_energy,
+
+            "volume_change": volume_change,
+
+            "distance_to_Ca": approx_distance,
+
+            "coord_shell": coord_shell,
+
+            "structural_sector": sector,
+
+            "interpretation": interpretation
+        })
+
+    result_df = pd.DataFrame(rows)
+
+    result_df = result_df.sort_values(
+        by="RC_projection",
+        ascending=False
+    )
+
+    result_df.to_csv(
+        "structural_residue_interpretation.csv",
+        index=False
+    )
+
+    print(
+        "[INFO] Written: "
+        "structural_residue_interpretation.csv"
+    )
+
+    return result_df
+
+
+def plot_rc_vs_ddg(df, phi_all, metrics):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy import stats
+
+    print("\n[INFO] Plotting RC vs ΔΔG...")
+
+    x = phi_all
+    y = df["ddG_exp"].values
+    labels = df["mutant"].values
+
+    # -----------------------------
+    # Linear fit
+    # -----------------------------
+    slope, intercept, r_value, _, _ = stats.linregress(x, y)
+    y_fit = slope * x + intercept
+
+    rmse = metrics["RMSE"]
+    rp = metrics["Rp"]
+
+    # -----------------------------
+    # Colors (clean palette)
+    # -----------------------------
+    pos_color = '#E74C3C'
+    neg_color = '#1ABC9C'
+    fit_color = '#2C3E50'
+
+    colors = [pos_color if val > 0 else neg_color for val in y]
+
+    # -----------------------------
+    # Plot
+    # -----------------------------
+    plt.rcParams.update({
+
+        "font.family": "serif",
+
+        "mathtext.fontset": "stix",
+
+        "font.size": 10,
+
+        "axes.titleweight": "bold",
+
+        "axes.labelweight": "bold"
+
+    })
+
+    plt.figure(figsize=(5,4))
+
+    plt.scatter(x, y, c=colors,
+                edgecolors='black',
+                linewidths=0.5)
+
+    plt.plot(x, y_fit,
+             color=fit_color,
+             linewidth=2,
+             label=f'RMSE={rmse:.2f}, $R_p$={rp:.2f}')
+
+    # annotations
+    from adjustText import adjust_text
+
+    texts = []
+    for xi, yi, lab in zip(x, y, labels):
+        texts.append(
+            plt.text(xi, yi, lab, fontsize=7)
+        )
+
+    adjust_text(
+    texts,
+    arrowprops=dict(arrowstyle='-', lw=0.5),
+    expand_points=(1.2, 1.2),
+    expand_text=(1.2, 1.2),
+    force_text=0.5
+    )
+
+    # axis labels (publication standard)
+    plt.xlabel(r'Reaction Coordinate ($\xi$)', fontsize=11)
+    plt.ylabel(r'$\Delta\Delta G_{\mathrm{exp}}\ \mathrm{(kcal\ mol^{-1})}$',
+               fontsize=11)
+
+    # structure-only tag
+    plt.text(0.02, 0.98,
+             'Structure-derived RC',
+             transform=plt.gca().transAxes,
+             fontsize=10,
+             verticalalignment='top')
+
+    plt.legend(frameon=False)
+    plt.tight_layout()
+
+    # save
+    plt.savefig("RC_vs_ddG.pdf")
+    plt.savefig("RC_vs_ddG(Structure).png", dpi=300)
+
+    plt.show()
+    
 # ============================================================
 # MAIN
 # ============================================================
@@ -1407,9 +1635,15 @@ def main():
 
     compare_alpha_beta_representations(context)
 
-    phi_all, _, _ = run_reaction_coordinate_model(df_base)
+    phi_all, y_pred, metrics = run_reaction_coordinate_model(df_base)
+    plot_rc_vs_ddg(df_base, phi_all, metrics)
 
     rc_results = analyze_rc_coefficients(df_base)
+
+    generate_structural_interpretation_table(
+    df_base,
+    rc_results["w_mean"]
+    )
 
     df_augmented = augment_feature_table(df_base, context)
 
